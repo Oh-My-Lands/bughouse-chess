@@ -36,6 +36,11 @@ import { reorderSimultaneousCheckmateMove, useAnalysisState } from "../moves/use
 import VariationSelector from "../moves/VariationSelector";
 import PromotionPicker from "../board/PromotionPicker";
 import MoveListWithVariations from "../moves/MoveListWithVariations";
+import { EngineLinesPanel } from "../engine/EngineLinesPanel";
+import { useEngineAnalysis } from "../../hooks/useEngineAnalysis";
+import { engineMoveToAttempted, sideToMove } from "../../utils/engine/engineMove";
+import type { EngineLine } from "../../utils/engine/engineClient";
+import type { EngineModeSetting } from "../../utils/engine/engineMode";
 import { ChessTitleBadge } from "../badges/ChessTitleBadge";
 import { TooltipAnchor } from "../ui/TooltipAnchor";
 import { BoardCornerMaterial } from "../board/BoardCornerMaterial";
@@ -1051,6 +1056,67 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
     monotonicMoveTimestampsDeciseconds,
     processedGame,
   ]);
+
+  /* ---------------------------------------------------------------- engine */
+
+  /**
+   * Engine analysis is opt-in via NEXT_PUBLIC_ENGINE_ENDPOINT, pointing at
+   * either a local dev server or a deployed endpoint. Without it the panel is
+   * not rendered at all: analysis costs GPU time, so it should never start
+   * because a page happened to load.
+   */
+  const engineEndpoint = process.env.NEXT_PUBLIC_ENGINE_ENDPOINT ?? "";
+  const [engineBoardId, setEngineBoardId] = useState<BughouseBoardId>("A");
+  const [engineModeSetting, setEngineModeSetting] =
+    useState<EngineModeSetting>("auto");
+
+  // Analyse for whoever is to move on the chosen board -- that is the side the
+  // candidate moves belong to. Boards have independent turns, so this is read
+  // per board rather than shared.
+  const engineSide = sideToMove(currentPosition, engineBoardId);
+
+  const {
+    analysis: engineAnalysis,
+    isAnalyzing: isEngineAnalyzing,
+    error: engineError,
+    modeInfo: engineModeInfo,
+    refresh: refreshEngineAnalysis,
+  } = useEngineAnalysis({
+    endpoint: engineEndpoint,
+    position: currentPosition,
+    board: engineBoardId,
+    side: engineSide,
+    clocks: clockSnapshot,
+    modeSetting: engineModeSetting,
+    // Live replay moves the position continuously; searching each frame would
+    // queue and abandon a request per tick for no benefit.
+    enabled: Boolean(engineEndpoint) && !isLiveReplayPlaying,
+  });
+
+  /** Plays an engine candidate into the variation tree. */
+  const handlePlayEngineMove = useCallback(
+    (line: EngineLine) => {
+      const attempted = engineMoveToAttempted(
+        line.move,
+        engineBoardId,
+        currentPosition,
+      );
+      if (!attempted) {
+        // Sit has no half-move representation, so it cannot become a variation.
+        toast("Sit cannot be played as a variation.");
+        return;
+      }
+
+      const result = tryApplyMove(attempted);
+      if (result.type === "error") {
+        // The engine searched the position we sent it, so a rejection here
+        // means the two disagree about the position -- worth surfacing rather
+        // than silently ignoring.
+        toast.error(result.message);
+      }
+    },
+    [currentPosition, engineBoardId, tryApplyMove],
+  );
 
   /**
    * Precompute the mainline node IDs by ply so live replay can jump in O(1) when time advances.
@@ -2324,24 +2390,45 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
               isCompactLandscape ? "h-[280px] max-h-[60vh]" : "",
             ].join(" ")}
           >
-            <MoveListWithVariations
-              tree={state.tree}
-              cursorNodeId={state.cursorNodeId}
-              selectedNodeId={state.selectedNodeId}
-              players={players}
-              isBoardOrderSwapped={isBoardOrderSwapped}
-              onToggleBoardOrder={handleToggleBoardOrder}
-              combinedMoves={combinedMovesForMoveTimes}
-              combinedMoveDurations={combinedMoveDurationsForMoveTimes}
-              footer={moveListFooter}
-              disabled={isLiveReplayPlaying}
-              onSelectNode={selectNode}
-              onPromoteVariationOneLevel={promoteVariationOneLevel}
-              onTruncateAfterNode={truncateAfterNode}
-              onTruncateFromNodeInclusive={truncateFromNodeInclusive}
-              onShareGameFromNode={handleShareGameFromNode}
-              canShareGameFromNode={canShareGameFromNode}
-            />
+            {/* The engine panel sizes to its content; the move list takes the
+                rest, so the column keeps its existing height behaviour. */}
+            <div className="flex h-full min-h-0 flex-col gap-2">
+              {engineEndpoint ? (
+                <EngineLinesPanel
+                  analysis={engineAnalysis}
+                  isAnalyzing={isEngineAnalyzing}
+                  error={engineError}
+                  modeInfo={engineModeInfo}
+                  board={engineBoardId}
+                  modeSetting={engineModeSetting}
+                  onBoardChange={setEngineBoardId}
+                  onModeSettingChange={setEngineModeSetting}
+                  onRefresh={refreshEngineAnalysis}
+                  onPlayMove={handlePlayEngineMove}
+                />
+              ) : null}
+
+              <div className="min-h-0 flex-1">
+                <MoveListWithVariations
+                  tree={state.tree}
+                  cursorNodeId={state.cursorNodeId}
+                  selectedNodeId={state.selectedNodeId}
+                  players={players}
+                  isBoardOrderSwapped={isBoardOrderSwapped}
+                  onToggleBoardOrder={handleToggleBoardOrder}
+                  combinedMoves={combinedMovesForMoveTimes}
+                  combinedMoveDurations={combinedMoveDurationsForMoveTimes}
+                  footer={moveListFooter}
+                  disabled={isLiveReplayPlaying}
+                  onSelectNode={selectNode}
+                  onPromoteVariationOneLevel={promoteVariationOneLevel}
+                  onTruncateAfterNode={truncateAfterNode}
+                  onTruncateFromNodeInclusive={truncateFromNodeInclusive}
+                  onShareGameFromNode={handleShareGameFromNode}
+                  canShareGameFromNode={canShareGameFromNode}
+                />
+              </div>
+            </div>
           </div>
         ) : null}
       </div>

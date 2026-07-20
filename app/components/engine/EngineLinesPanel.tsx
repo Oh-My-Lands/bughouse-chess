@@ -161,6 +161,7 @@ export function EngineLinesPanel({
             <li key={line.multipv}>
               <button
                 type="button"
+                data-testid="engine-line-row"
                 onClick={() => onPlayMove?.(line)}
                 disabled={!onPlayMove || line.move === null}
                 className="group w-full rounded px-2 py-1.5 text-left transition hover:bg-slate-800 disabled:cursor-default disabled:hover:bg-transparent"
@@ -170,6 +171,7 @@ export function EngineLinesPanel({
                     {line.multipv}
                   </span>
                   <span
+                    data-testid="engine-line-move"
                     className={`font-mono text-sm ${
                       line.move === null
                         ? "italic text-amber-300"
