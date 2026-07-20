@@ -3,26 +3,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { BughouseBoardId, BughousePositionSnapshot } from "@/app/types/analysis";
-import type { BughouseClocksSnapshotByBoard } from "@/app/types/bughouse";
 import { EngineError, analyzePosition } from "@/app/utils/engine/engineClient";
 import type { EngineAnalysis } from "@/app/utils/engine/engineClient";
 import { BughouseFenError, toEngineFen } from "@/app/utils/engine/bughouseFen";
-import { deriveEngineMode } from "@/app/utils/engine/engineMode";
-import type {
-  EngineModeSetting,
-  ModeDerivationResult,
-} from "@/app/utils/engine/engineMode";
+import type { EngineMode } from "@/app/utils/engine/engineMode";
 
 export interface UseEngineAnalysisOptions {
   endpoint: string;
   position: BughousePositionSnapshot | null;
   board: BughouseBoardId;
   side: "white" | "black";
-  clocks: BughouseClocksSnapshotByBoard | null;
-  modeSetting: EngineModeSetting;
+  /** Engine time model. Chosen explicitly; see engineMode. */
+  mode: EngineMode;
   multipv?: number;
   nodes?: number;
-  /** When false, nothing is requested. Analysis costs GPU time. */
+  /**
+   * When false, nothing is requested automatically — `refresh()` still runs a
+   * single search on demand. Defaults to false: a search is real GPU time, and
+   * the engine completes one even if the client disconnects, so an automatic
+   * search per navigation step is paid for whether or not it is ever read.
+   */
   enabled?: boolean;
   /**
    * Wait this long after the position settles before searching. Stepping
@@ -36,15 +36,16 @@ export interface UseEngineAnalysisResult {
   analysis: EngineAnalysis | null;
   isAnalyzing: boolean;
   error: string | null;
-  /** What Mode resolved to and why; drives the UI's auto/override display. */
-  modeInfo: ModeDerivationResult;
-  /** Re-run for the current position, ignoring the debounce. */
+  /**
+   * Run one search now for the current position, regardless of `enabled`
+   * and ignoring the debounce.
+   */
   refresh: () => void;
 }
 
 const DEFAULT_DEBOUNCE_MS = 300;
-const DEFAULT_MULTIPV = 5;
-const DEFAULT_NODES = 200_000;
+const DEFAULT_MULTIPV = 3;
+const DEFAULT_NODES = 50_000;
 
 /**
  * Runs engine analysis for the position currently being viewed.
@@ -63,23 +64,18 @@ export function useEngineAnalysis(
     position,
     board,
     side,
-    clocks,
-    modeSetting,
+    mode,
     multipv = DEFAULT_MULTIPV,
     nodes = DEFAULT_NODES,
-    enabled = true,
+    enabled = false,
     debounceMs = DEFAULT_DEBOUNCE_MS,
   } = options;
 
   const [analysis, setAnalysis] = useState<EngineAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refreshToken, setRefreshToken] = useState(0);
 
   const abortRef = useRef<AbortController | null>(null);
-
-  const modeInfo = deriveEngineMode({ board, side, clocks, setting: modeSetting });
-  const mode = modeInfo.mode;
 
   // Encoding the position is also the validity check: the engine does not
   // reject a malformed FEN, it silently searches a nonsense position. Failing
@@ -107,72 +103,104 @@ export function useEngineAnalysis(
     mode,
     multipv,
     nodes,
-    refreshToken,
   ].join("|");
 
-  useEffect(() => {
+  // The request itself, independent of what triggered it.
+  const runAnalysis = () => {
+    if (!position || !engineFen) return;
+
     abortRef.current?.abort();
-
-    if (!enabled || !position || !engineFen) {
-      setIsAnalyzing(false);
-      return;
-    }
-
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const timer = setTimeout(() => {
-      setIsAnalyzing(true);
-      setError(null);
+    // Clearing the loading flag on abort keeps the spinner from sticking when a
+    // request is dropped rather than answered — whether that came from a new
+    // search, auto being switched off, or unmount. Doing it here rather than at
+    // each abort site means every path is covered by construction.
+    controller.signal.addEventListener("abort", () => setIsAnalyzing(false));
 
-      analyzePosition(endpoint, {
-        position,
-        board,
-        side,
-        multipv,
-        mode,
-        nodes,
-        signal: controller.signal,
+    setIsAnalyzing(true);
+    setError(null);
+
+    analyzePosition(endpoint, {
+      position,
+      board,
+      side,
+      multipv,
+      mode,
+      nodes,
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        setAnalysis(result);
+        setIsAnalyzing(false);
       })
-        .then((result) => {
-          if (controller.signal.aborted) return;
-          setAnalysis(result);
-          setIsAnalyzing(false);
-        })
-        .catch((cause) => {
-          if (controller.signal.aborted) return;
-          setIsAnalyzing(false);
-          setError(
-            cause instanceof EngineError
-              ? cause.message
-              : "Analysis failed unexpectedly.",
-          );
-        });
-    }, debounceMs);
+      .catch((cause) => {
+        if (controller.signal.aborted) return;
+        setIsAnalyzing(false);
+        setError(
+          cause instanceof EngineError
+            ? cause.message
+            : "Analysis failed unexpectedly.",
+        );
+      });
+  };
 
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
+  // Latest-ref pattern: `refresh` is called from an event handler that can fire
+  // long after the render that created it, so it must not close over stale
+  // position/mode/budget values. The ref is updated after every render (in an
+  // effect, not during render) and always points at the current closure.
+  const runRef = useRef(runAnalysis);
+  useEffect(() => {
+    runRef.current = runAnalysis;
+  });
+
+  // Automatic analysis: only while `enabled`. When it is off nothing is
+  // requested, so navigating costs nothing — a search is GPU time, and the
+  // engine finishes one even if the client hangs up, so an abandoned request
+  // is paid for in full.
+  useEffect(() => {
+    if (!enabled) {
+      // The abort listener above clears the loading flag.
+      abortRef.current?.abort();
+      return;
+    }
+
+    const timer = setTimeout(() => runRef.current(), debounceMs);
+    return () => clearTimeout(timer);
     // requestKey collapses the inputs that matter; the rest are read through it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestKey, enabled, endpoint, debounceMs]);
 
-  // Results belong to the position that produced them. Clearing on change stops
-  // the panel showing another position's numbers while the next search runs.
-  useEffect(() => {
+  // Results belong to the position that produced them; showing one position's
+  // numbers under another is worse than showing none, because they look
+  // authoritative. Reset during render rather than in an effect so the stale
+  // analysis is never painted for a frame first.
+  const resultKey = [engineFen ?? "", board, side, mode].join("|");
+  const [renderedForKey, setRenderedForKey] = useState(resultKey);
+  if (renderedForKey !== resultKey) {
+    setRenderedForKey(resultKey);
     setAnalysis(null);
-  }, [engineFen, board, side, mode]);
+  }
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const refresh = useCallback(() => setRefreshToken((n) => n + 1), []);
+  // Runs one search immediately, whether or not automatic analysis is on. This
+  // is what makes "off" usable: park on a position, ask for one search, pay for
+  // exactly that.
+  //
+  // Deliberately does NOT bump a state counter to re-trigger the effect above.
+  // Doing so changed requestKey, which re-ran that effect, which saw `enabled`
+  // false and aborted the request this function had just started — the engine
+  // ran the whole search and the result was discarded on arrival.
+  const refresh = useCallback(() => {
+    runRef.current();
+  }, []);
 
   return {
     analysis,
     isAnalyzing,
     error: fenError ?? error,
-    modeInfo,
     refresh,
   };
 }

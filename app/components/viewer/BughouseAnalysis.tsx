@@ -40,7 +40,7 @@ import { EngineLinesPanel } from "../engine/EngineLinesPanel";
 import { useEngineAnalysis } from "../../hooks/useEngineAnalysis";
 import { engineMoveToAttempted, sideToMove } from "../../utils/engine/engineMove";
 import type { EngineLine } from "../../utils/engine/engineClient";
-import type { EngineModeSetting } from "../../utils/engine/engineMode";
+import type { EngineMode } from "../../utils/engine/engineMode";
 import { ChessTitleBadge } from "../badges/ChessTitleBadge";
 import { TooltipAnchor } from "../ui/TooltipAnchor";
 import { BoardCornerMaterial } from "../board/BoardCornerMaterial";
@@ -1067,8 +1067,11 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
    */
   const engineEndpoint = process.env.NEXT_PUBLIC_ENGINE_ENDPOINT ?? "";
   const [engineBoardId, setEngineBoardId] = useState<BughouseBoardId>("A");
-  const [engineModeSetting, setEngineModeSetting] =
-    useState<EngineModeSetting>("auto");
+  // "go" is the conservative default: it is the smaller action space, so it
+  // cannot invent a double-sit the team has not earned.
+  const [engineMode, setEngineMode] = useState<EngineMode>("go");
+  const [engineNodes, setEngineNodes] = useState(50_000);
+  const [engineMultipv, setEngineMultipv] = useState(3);
 
   // Analyse for whoever is to move on the chosen board -- that is the side the
   // candidate moves belong to. Boards have independent turns, so this is read
@@ -1079,18 +1082,18 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
     analysis: engineAnalysis,
     isAnalyzing: isEngineAnalyzing,
     error: engineError,
-    modeInfo: engineModeInfo,
     refresh: refreshEngineAnalysis,
   } = useEngineAnalysis({
     endpoint: engineEndpoint,
     position: currentPosition,
     board: engineBoardId,
     side: engineSide,
-    clocks: clockSnapshot,
-    modeSetting: engineModeSetting,
-    // Live replay moves the position continuously; searching each frame would
-    // queue and abandon a request per tick for no benefit.
-    enabled: Boolean(engineEndpoint) && !isLiveReplayPlaying,
+    mode: engineMode,
+    nodes: engineNodes,
+    multipv: engineMultipv,
+    // Analysis is always explicit: `enabled` stays false, so nothing is
+    // requested until the user asks. Navigating a game costs nothing, and a
+    // search happens only on the analyse button.
   });
 
   /** Plays an engine candidate into the variation tree. */
@@ -2398,11 +2401,16 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
                   analysis={engineAnalysis}
                   isAnalyzing={isEngineAnalyzing}
                   error={engineError}
-                  modeInfo={engineModeInfo}
                   board={engineBoardId}
-                  modeSetting={engineModeSetting}
+                  side={engineSide}
+                  position={currentPosition}
+                  mode={engineMode}
+                  nodes={engineNodes}
+                  multipv={engineMultipv}
                   onBoardChange={setEngineBoardId}
-                  onModeSettingChange={setEngineModeSetting}
+                  onModeChange={setEngineMode}
+                  onNodesChange={setEngineNodes}
+                  onMultipvChange={setEngineMultipv}
                   onRefresh={refreshEngineAnalysis}
                   onPlayMove={handlePlayEngineMove}
                 />

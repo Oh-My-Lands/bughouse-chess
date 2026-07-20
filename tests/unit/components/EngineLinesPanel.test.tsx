@@ -6,7 +6,6 @@ import type {
   EngineAnalysis,
   EngineLine,
 } from "../../../app/utils/engine/engineClient";
-import type { ModeDerivationResult } from "../../../app/utils/engine/engineMode";
 
 function line(over: Partial<EngineLine> = {}): EngineLine {
   return {
@@ -36,24 +35,21 @@ function analysis(lines: EngineLine[]): EngineAnalysis {
   };
 }
 
-const modeInfo: ModeDerivationResult = {
-  mode: "go",
-  autoMode: "go",
-  isOverridden: false,
-  autoUnavailable: false,
-  diffDeciseconds: 0,
-};
-
 function renderPanel(over: Partial<Parameters<typeof EngineLinesPanel>[0]> = {}) {
   const props = {
     analysis: analysis([line()]),
     isAnalyzing: false,
     error: null,
-    modeInfo,
     board: "A" as const,
-    modeSetting: "auto" as const,
+    side: "white" as const,
+    position: null,
+    mode: "go" as const,
+    nodes: 50_000,
+    multipv: 3,
     onBoardChange: vi.fn(),
-    onModeSettingChange: vi.fn(),
+    onModeChange: vi.fn(),
+    onNodesChange: vi.fn(),
+    onMultipvChange: vi.fn(),
     onRefresh: vi.fn(),
     onPlayMove: vi.fn(),
     ...over,
@@ -62,6 +58,28 @@ function renderPanel(over: Partial<Parameters<typeof EngineLinesPanel>[0]> = {})
 }
 
 describe("EngineLinesPanel", () => {
+  it("renders moves as algebraic notation when a position is available", () => {
+    // Display only — the underlying move stays UCI so it can still be played
+    // into the variation tree.
+    const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    renderPanel({
+      analysis: analysis([line({ move: "g1f3", pv: [{ a: "g1f3", b: null }] })]),
+      position: {
+        fenA: START,
+        fenB: START,
+        reserves: { A: { white: {}, black: {} }, B: { white: {}, black: {} } },
+        promotedSquares: { A: [], B: [] },
+        captureMaterial: {} as never,
+      },
+    });
+    expect(screen.getByTestId("engine-line-move")).toHaveTextContent("Nf3");
+  });
+
+  it("falls back to raw UCI when there is no position to convert against", () => {
+    renderPanel({ position: null });
+    expect(screen.getByTestId("engine-line-move")).toHaveTextContent("d2d4");
+  });
+
   it("shows the candidate move and its evaluation", () => {
     renderPanel();
     // Scoped: the move also appears inside the PV preview below it.
@@ -109,24 +127,22 @@ describe("EngineLinesPanel", () => {
     expect(props.onBoardChange).toHaveBeenCalledWith("B");
   });
 
-  it("shows what auto currently resolves to", () => {
-    // Mode changes the evaluation, so the user must be able to tell which rule
-    // set produced the numbers.
-    renderPanel({ modeInfo: { ...modeInfo, autoMode: "sit" } });
-    expect(screen.getByText("auto (sit)")).toBeInTheDocument();
+  it("offers only the two engine modes", () => {
+    // Mode is hashed into the position key, so it must never change on its own
+    // -- there is no derived third state to fall back to.
+    renderPanel();
+    expect(screen.getByRole("button", { name: "go" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "sit" })).toBeInTheDocument();
+    expect(screen.queryByText(/auto/)).toBeNull();
   });
 
-  it("says when auto has no clocks to work from", () => {
-    renderPanel({
-      modeInfo: { ...modeInfo, autoUnavailable: true, diffDeciseconds: null },
-    });
-    expect(screen.getByText("auto (no clocks)")).toBeInTheDocument();
-  });
-
-  it("lets the mode be overridden", () => {
+  it("reports a mode change", () => {
     const { props } = renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "sit" }));
-    expect(props.onModeSettingChange).toHaveBeenCalledWith("sit");
+    expect(props.onModeChange).toHaveBeenCalledWith("sit");
   });
 
   it("surfaces an error instead of lines", () => {
@@ -144,5 +160,90 @@ describe("EngineLinesPanel", () => {
   it("shows an empty state while the first search runs", () => {
     renderPanel({ analysis: null, isAnalyzing: true });
     expect(screen.getByText("Analysing…")).toBeInTheDocument();
+  });
+
+  describe("cost controls", () => {
+    it("always offers a one-shot analyse button when there is nothing to show", () => {
+      // Analysis is explicit: the engine is never asked until the user asks.
+      const { props } = renderPanel({ analysis: null });
+      expect(screen.getByText("No analysis yet.")).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole("button", { name: /analyse this position/i }),
+      );
+      expect(props.onRefresh).toHaveBeenCalled();
+    });
+
+    it("marks the active line count and reports changes", () => {
+      const { props } = renderPanel({ multipv: 3 });
+      expect(screen.getByRole("button", { name: "3" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "5" }));
+      expect(props.onMultipvChange).toHaveBeenCalledWith(5);
+    });
+
+    it("says extra lines are free, unlike extra nodes", () => {
+      // 1 line and 8 lines cost the same search; only confidence differs.
+      renderPanel();
+      expect(screen.getByRole("button", { name: "5" })).toHaveAttribute(
+        "title",
+        expect.stringContaining("same search cost"),
+      );
+    });
+
+    it("marks the active node budget and reports changes", () => {
+      const { props } = renderPanel({ nodes: 50_000 });
+      expect(screen.getByRole("button", { name: "50k" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "200k" }));
+      expect(props.onNodesChange).toHaveBeenCalledWith(200_000);
+    });
+
+    it("surfaces the cost of each budget", () => {
+      // Nodes buy depth at a poor exchange rate, so the time cost has to be
+      // visible at the point of choosing.
+      renderPanel();
+      expect(screen.getByRole("button", { name: "200k" })).toHaveAttribute(
+        "title",
+        expect.stringContaining("14s"),
+      );
+    });
+
+    it("blocks a second search while one is running", () => {
+      renderPanel({ isAnalyzing: true });
+      expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
+    });
+  });
+
+  describe("starting a search", () => {
+    it("offers exactly one control when there is nothing to re-run", () => {
+      // The header icon and the empty state's labelled button both call
+      // onRefresh, so showing both would be two controls for one action.
+      renderPanel({ analysis: null });
+      expect(screen.queryByRole("button", { name: "Run analysis" })).toBeNull();
+      expect(
+        screen.getByRole("button", { name: /Analyse this position/ }),
+      ).toBeInTheDocument();
+    });
+
+    it("swaps to the icon once a result exists", () => {
+      renderPanel();
+      expect(
+        screen.getByRole("button", { name: "Run analysis" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Analyse this position/ })).toBeNull();
+    });
+
+    it("keeps the icon for retrying after an error", () => {
+      // The error state replaces the empty state, so without this the panel
+      // would offer no way to try again.
+      renderPanel({ analysis: null, error: "engine unreachable" });
+      expect(
+        screen.getByRole("button", { name: "Run analysis" }),
+      ).toBeInTheDocument();
+    });
   });
 });

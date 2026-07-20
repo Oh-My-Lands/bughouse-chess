@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { analyzePosition } from "@/app/utils/engine/engineClient";
 import { engineMoveToAttempted } from "@/app/utils/engine/engineMove";
-import { deriveEngineMode } from "@/app/utils/engine/engineMode";
 import type { BughousePositionSnapshot } from "@/app/types/analysis";
-import type { BughouseClocksSnapshotByBoard } from "@/app/types/bughouse";
 
 /**
  * End-to-end drive against a live engine, on positions with a known answer.
@@ -144,23 +142,13 @@ describeLive("live engine drive", () => {
     expect(Math.abs(got.lines[0].q)).toBeLessThan(0.5);
   }, 180_000);
 
-  it("sends the mode that auto derives from the clocks", async () => {
-    // A clear time lead for the analysed team resolves to sit, and the engine
-    // must accept that combination rather than reject it.
-    const clocks = {
-      A: { white: 2000, black: 1000 },
-      B: { white: 1000, black: 2000 },
-    } as BughouseClocksSnapshotByBoard;
-
-    const derived = deriveEngineMode({
-      board: "A", side: "white", clocks, setting: "auto",
-    });
-    expect(derived.mode).toBe("sit");
-
+  it("accepts sit mode, which widens the team's action space", async () => {
+    // sit is the permissive setting: it allows joint actions go forbids, so the
+    // engine has to accept the combination rather than reject it.
     const got = await analyzePosition(ENDPOINT!, {
       position: position({ fenA: "4k3/8/8/8/8/8/8/3QK3 w - - 0 1" }),
       board: "A", side: "white",
-      multipv: 3, mode: derived.mode, nodes: 20_000,
+      multipv: 3, mode: "sit", nodes: 20_000,
     });
     expect(got.lines.length).toBeGreaterThan(0);
   }, 180_000);

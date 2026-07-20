@@ -1,40 +1,78 @@
 "use client";
 
 import React from "react";
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Loader2, Play, RefreshCw } from "lucide-react";
 
-import type { BughouseBoardId } from "../../types/analysis";
-import type { EngineAnalysis, EngineLine } from "../../utils/engine/engineClient";
 import type {
-  EngineModeSetting,
-  ModeDerivationResult,
-} from "../../utils/engine/engineMode";
+  BughouseBoardId,
+  BughousePositionSnapshot,
+  BughouseSide,
+} from "../../types/analysis";
+import {
+  NOT_ON_TURN_LABEL,
+  candidateToSan,
+  pvToSan,
+  teamColoursFor,
+} from "../../utils/engine/engineSan";
+import type { EngineAnalysis, EngineLine } from "../../utils/engine/engineClient";
+import type { EngineMode } from "../../utils/engine/engineMode";
 
 interface EngineLinesPanelProps {
   analysis: EngineAnalysis | null;
   isAnalyzing: boolean;
   error: string | null;
-  modeInfo: ModeDerivationResult;
   /** Board the user is analysing. */
   board: BughouseBoardId;
-  modeSetting: EngineModeSetting;
+  /** Colour being analysed on that board -- the side to move there. */
+  side: BughouseSide;
+  /**
+   * Position the analysis was run on. Used only to render moves as algebraic
+   * notation; the underlying moves stay UCI everywhere else.
+   */
+  position: BughousePositionSnapshot | null;
+  /** Engine time model. */
+  mode: EngineMode;
+  /** Search budget in nodes. */
+  nodes: number;
+  /** How many candidate moves to rank. */
+  multipv: number;
   onBoardChange: (board: BughouseBoardId) => void;
-  onModeSettingChange: (setting: EngineModeSetting) => void;
+  onModeChange: (mode: EngineMode) => void;
+  onNodesChange: (nodes: number) => void;
+  onMultipvChange: (multipv: number) => void;
+  /** Runs one search for the current position. */
   onRefresh: () => void;
   /** Plays a candidate into the variation tree. */
   onPlayMove?: (line: EngineLine) => void;
 }
 
 /**
- * "sit" is a real action in bughouse -- waiting for the partner rather than
- * moving. It has no from/to squares, so it needs a label of its own instead of
- * being rendered as a move or hidden.
+ * How many candidate moves to rank.
+ *
+ * Unlike the node budget, this is free: measured on an RTX 4090, 1 line and 8
+ * lines both cost 50,016 nodes and ~3.5s. MultiPV reports more of the tree the
+ * search already built rather than searching harder. The catch is confidence,
+ * not time -- the search concentrates its visits on the moves it likes, so the
+ * lower-ranked lines are backed by very few visits and their evaluations are
+ * correspondingly weak. Watch the visit bar, not the rank.
  */
-const SIT_LABEL = "sit";
+const MULTIPV_OPTIONS = [1, 2, 3, 5] as const;
 
-function formatMove(move: string | null): string {
-  return move ?? SIT_LABEL;
-}
+/**
+ * Search budgets, with the cost of each made visible.
+ *
+ * Nodes are the effort you buy; depth is what it gets you, and the exchange
+ * rate is poor -- measured on an RTX 4090 from the starting position, 100x the
+ * nodes bought less than 2x the depth. Time, by contrast, scales linearly.
+ * Showing depth and duration next to each option keeps that trade-off in front
+ * of whoever is choosing.
+ */
+const NODE_OPTIONS = [
+  { nodes: 5_000, label: "5k", detail: "~depth 10 · 0.4s" },
+  { nodes: 20_000, label: "20k", detail: "~depth 11 · 1.4s" },
+  { nodes: 50_000, label: "50k", detail: "~depth 12 · 3.5s" },
+  { nodes: 200_000, label: "200k", detail: "~depth 14 · 14s" },
+] as const;
 
 /**
  * Formats the evaluation.
@@ -70,11 +108,31 @@ function confidenceWidth(line: EngineLine, total: number): string {
   return `${Math.max(2, Math.round((line.visits / total) * 100))}%`;
 }
 
-function PvPreview({ line, board }: { line: EngineLine; board: BughouseBoardId }) {
+/** "—" is short by design; the meaning lives in the tooltip. */
+function titleFor(label: string): string | undefined {
+  return label === NOT_ON_TURN_LABEL ? "Not on turn -- no move possible" : undefined;
+}
+
+function PvPreview({
+  line,
+  board,
+  side,
+  position,
+}: {
+  line: EngineLine;
+  board: BughouseBoardId;
+  side: BughouseSide;
+  position: BughousePositionSnapshot | null;
+}) {
   // PVs are joint actions over both boards. Showing only the user's half would
   // misrepresent the line, since the partner's moves are part of why it scores
   // as it does -- so both are shown, with the user's board emphasised.
-  const plies = line.pv.slice(0, 6);
+  //
+  // Converted as a whole rather than per ply: naming a move needs the position
+  // it is played in, so the variation has to be replayed from the start.
+  // Team colours let the replay tell a chosen wait from a forced one, so a
+  // partner who simply is not on turn does not read as a decision to stall.
+  const plies = pvToSan(line.pv.slice(0, 6), position, teamColoursFor(board, side));
   return (
     <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-slate-400">
       {plies.map((ply, index) => {
@@ -82,8 +140,12 @@ function PvPreview({ line, board }: { line: EngineLine; board: BughouseBoardId }
         const theirs = board === "A" ? ply.b : ply.a;
         return (
           <span key={index} className="whitespace-nowrap">
-            <span className="text-slate-200">{formatMove(mine)}</span>
-            <span className="text-slate-500">/{formatMove(theirs)}</span>
+            <span className="text-slate-200" title={titleFor(mine)}>
+              {mine}
+            </span>
+            <span className="text-slate-500" title={titleFor(theirs)}>
+              /{theirs}
+            </span>
           </span>
         );
       })}
@@ -103,11 +165,16 @@ export function EngineLinesPanel({
   analysis,
   isAnalyzing,
   error,
-  modeInfo,
   board,
-  modeSetting,
+  side,
+  mode,
+  position,
+  nodes,
+  multipv,
   onBoardChange,
-  onModeSettingChange,
+  onModeChange,
+  onNodesChange,
+  onMultipvChange,
   onRefresh,
   onPlayMove,
 }: EngineLinesPanelProps) {
@@ -126,20 +193,31 @@ export function EngineLinesPanel({
 
         <div className="flex items-center gap-2">
           <BoardSelector board={board} onChange={onBoardChange} />
-          <ModeSelector
-            setting={modeSetting}
-            modeInfo={modeInfo}
-            onChange={onModeSettingChange}
-          />
-          <button
-            type="button"
-            onClick={onRefresh}
-            className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-            aria-label="Re-run analysis"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
+          <ModeSelector mode={mode} onChange={onModeChange} />
+          {/*
+            The empty state offers its own labelled button, which is far more
+            discoverable than a bare icon. Showing both would be two controls
+            doing one thing, so this one defers until there is a result to
+            re-run -- or an error to retry.
+          */}
+          {(lines.length > 0 || error) && (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={isAnalyzing}
+              className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-40"
+              aria-label="Run analysis"
+              title="Analyse this position again"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+        <MultiPvSelector multipv={multipv} onChange={onMultipvChange} />
+        <NodeSelector nodes={nodes} onChange={onNodesChange} />
       </div>
 
       {error && (
@@ -150,9 +228,23 @@ export function EngineLinesPanel({
       )}
 
       {!error && lines.length === 0 && (
-        <p className="py-3 text-center text-xs text-slate-500">
-          {isAnalyzing ? "Analysing…" : "No analysis yet."}
-        </p>
+        <div className="flex flex-col items-center gap-2 py-3">
+          {isAnalyzing ? (
+            <p className="text-xs text-slate-500">Analysing…</p>
+          ) : (
+            <>
+              <p className="text-xs text-slate-500">No analysis yet.</p>
+              <button
+                type="button"
+                onClick={onRefresh}
+                className="flex items-center gap-1.5 rounded border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+              >
+                <Play className="h-3 w-3" />
+                Analyse this position
+              </button>
+            </>
+          )}
+        </div>
       )}
 
       {lines.length > 0 && (
@@ -178,17 +270,19 @@ export function EngineLinesPanel({
                         : "text-slate-100"
                     }`}
                   >
-                    {formatMove(line.move)}
+                    {candidateToSan(line.move, board, position)}
                   </span>
+                  {/*
+                    q alone. The centipawn figure the engine also reports is a
+                    pure function of q (180*tan(1.56*q)), so showing both put two
+                    columns where there is one measurement -- and the pawn unit
+                    misleads in bughouse, where material flows between boards: a
+                    whole queen moves the evaluation only ~0.1, which reads as
+                    "slight edge" to anyone importing chess intuition.
+                  */}
                   <span className="ml-auto font-mono text-sm tabular-nums text-slate-100">
                     {formatEval(line)}
                   </span>
-                  {line.scoreCentipawns !== null && (
-                    <span className="w-14 shrink-0 text-right font-mono text-xs tabular-nums text-slate-500">
-                      {line.scoreCentipawns > 0 ? "+" : ""}
-                      {(line.scoreCentipawns / 100).toFixed(2)}
-                    </span>
-                  )}
                 </div>
 
                 <div className="mt-1 flex items-center gap-2">
@@ -202,7 +296,12 @@ export function EngineLinesPanel({
                   </span>
                 </div>
 
-                <PvPreview line={line} board={board} />
+                <PvPreview
+                  line={line}
+                  board={board}
+                  side={side}
+                  position={position}
+                />
               </button>
             </li>
           ))}
@@ -222,6 +321,85 @@ export function EngineLinesPanel({
           {analysis.timeMs !== null && <span>{analysis.timeMs} ms</span>}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * How many candidate moves to rank.
+ *
+ * Presented next to the node budget on purpose, because the two trade off
+ * differently: nodes cost time, lines cost nothing. See MULTIPV_OPTIONS.
+ */
+function MultiPvSelector({
+  multipv,
+  onChange,
+}: {
+  multipv: number;
+  onChange: (multipv: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] uppercase tracking-wide text-slate-500">
+        lines
+      </span>
+      <div className="flex overflow-hidden rounded border border-slate-700 text-xs">
+        {MULTIPV_OPTIONS.map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => onChange(option)}
+            aria-pressed={multipv === option}
+            title={
+              option === 1
+                ? "Best move only"
+                : `Top ${option} moves — same search cost as 1, but lower-ranked lines get few visits`
+            }
+            className={`px-1.5 py-0.5 ${
+              multipv === option
+                ? "bg-slate-700 text-slate-100"
+                : "text-slate-400 hover:bg-slate-800"
+            }`}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Search budget. See NODE_OPTIONS for why the cost is shown alongside. */
+function NodeSelector({
+  nodes,
+  onChange,
+}: {
+  nodes: number;
+  onChange: (nodes: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] uppercase tracking-wide text-slate-500">
+        nodes
+      </span>
+      <div className="flex overflow-hidden rounded border border-slate-700 text-xs">
+        {NODE_OPTIONS.map((option) => (
+          <button
+            key={option.nodes}
+            type="button"
+            onClick={() => onChange(option.nodes)}
+            aria-pressed={nodes === option.nodes}
+            title={option.detail}
+            className={`px-1.5 py-0.5 ${
+              nodes === option.nodes
+                ? "bg-slate-700 text-slate-100"
+                : "text-slate-400 hover:bg-slate-800"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -255,48 +433,40 @@ function BoardSelector({
 }
 
 /**
- * Three-state Mode control.
+ * Mode control.
  *
- * Auto is a real, returnable state rather than the absence of a choice, and it
- * shows what it currently resolves to -- Mode changes the evaluation, so
- * leaving the user to guess which rule set produced the numbers is not an
- * option.
+ * Explicit rather than derived from the clocks: Mode is hashed into the
+ * position key, so a value that changes on its own silently invalidates the
+ * tree and moves the evaluation under whoever is reading it.
  */
 function ModeSelector({
-  setting,
-  modeInfo,
+  mode,
   onChange,
 }: {
-  setting: EngineModeSetting;
-  modeInfo: ModeDerivationResult;
-  onChange: (setting: EngineModeSetting) => void;
+  mode: EngineMode;
+  onChange: (mode: EngineMode) => void;
 }) {
-  const autoLabel = modeInfo.autoUnavailable
-    ? "auto (no clocks)"
-    : `auto (${modeInfo.autoMode})`;
-
   return (
     <div
       className="flex overflow-hidden rounded border border-slate-700 text-xs"
       title={
-        modeInfo.autoUnavailable
-          ? "This position has no clocks, so auto cannot track a time advantage. Falling back to go."
-          : `Team clock difference: ${((modeInfo.diffDeciseconds ?? 0) / 10).toFixed(1)}s`
+        "go: your team is not up on time, so you may not both sit. " +
+        "sit: your team is up on time, so double-sitting is available."
       }
     >
-      {(["auto", "go", "sit"] as const).map((option) => (
+      {(["go", "sit"] as const).map((option) => (
         <button
           key={option}
           type="button"
           onClick={() => onChange(option)}
-          aria-pressed={setting === option}
+          aria-pressed={mode === option}
           className={`px-2 py-0.5 ${
-            setting === option
+            mode === option
               ? "bg-slate-700 text-slate-100"
               : "text-slate-400 hover:bg-slate-800"
           }`}
         >
-          {option === "auto" ? autoLabel : option}
+          {option}
         </button>
       ))}
     </div>
