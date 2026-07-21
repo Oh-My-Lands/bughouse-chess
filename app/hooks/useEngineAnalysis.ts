@@ -48,6 +48,14 @@ const DEFAULT_MULTIPV = 3;
 const DEFAULT_NODES = 50_000;
 
 /**
+ * How many analyses to keep.
+ *
+ * Each is a handful of lines, so this is small in memory; the cap exists only
+ * so that scrubbing through a long game cannot grow the map indefinitely.
+ */
+const MAX_CACHED_ANALYSES = 200;
+
+/**
  * Runs engine analysis for the position currently being viewed.
  *
  * Requests are keyed by everything that changes the answer -- position, board,
@@ -71,9 +79,27 @@ export function useEngineAnalysis(
     debounceMs = DEFAULT_DEBOUNCE_MS,
   } = options;
 
-  const [analysis, setAnalysis] = useState<EngineAnalysis | null>(null);
+  // Every analysis already paid for, keyed by the position that produced it.
+  //
+  // This is the whole display model: the shown analysis is *derived* from it
+  // rather than copied into a second piece of state. That is what makes
+  // navigation free -- stepping back to an analysed position finds its entry
+  // and shows it, stepping to a new one finds nothing and shows the empty
+  // state -- with no reset to keep in sync and no way for one position's
+  // numbers to be painted under another.
+  //
+  // It also settles the late-result problem by construction: a slow search
+  // files itself under the position it started from, so if the user has moved
+  // on it simply is not the entry being read.
+  const [cache, setCache] = useState<ReadonlyMap<string, EngineAnalysis>>(
+    () => new Map(),
+  );
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Errors are keyed too, so navigating away from a failure clears it without
+  // an explicit reset.
+  const [failure, setFailure] = useState<{ key: string; message: string } | null>(
+    null,
+  );
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -105,9 +131,17 @@ export function useEngineAnalysis(
     nodes,
   ].join("|");
 
+  // What a result is filed under. Narrower than requestKey on purpose: the
+  // budget changes how good an answer is, not which question it answers, so a
+  // re-run at a different budget replaces the entry rather than making a
+  // second one the user cannot get back to.
+  const resultKey = [engineFen ?? "", board, side, mode].join("|");
+
   // The request itself, independent of what triggered it.
   const runAnalysis = () => {
     if (!position || !engineFen) return;
+
+    const keyAtRequest = resultKey;
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -120,7 +154,7 @@ export function useEngineAnalysis(
     controller.signal.addEventListener("abort", () => setIsAnalyzing(false));
 
     setIsAnalyzing(true);
-    setError(null);
+    setFailure(null);
 
     analyzePosition(endpoint, {
       position,
@@ -133,17 +167,28 @@ export function useEngineAnalysis(
     })
       .then((result) => {
         if (controller.signal.aborted) return;
-        setAnalysis(result);
+        setCache((prev) => {
+          const next = new Map(prev);
+          next.set(keyAtRequest, result);
+          // Oldest-first eviction; entries are small, so the cap only exists to
+          // stop a long scrub growing this without bound.
+          while (next.size > MAX_CACHED_ANALYSES) {
+            next.delete(next.keys().next().value as string);
+          }
+          return next;
+        });
         setIsAnalyzing(false);
       })
       .catch((cause) => {
         if (controller.signal.aborted) return;
         setIsAnalyzing(false);
-        setError(
-          cause instanceof EngineError
-            ? cause.message
-            : "Analysis failed unexpectedly.",
-        );
+        setFailure({
+          key: keyAtRequest,
+          message:
+            cause instanceof EngineError
+              ? cause.message
+              : "Analysis failed unexpectedly.",
+        });
       });
   };
 
@@ -160,28 +205,24 @@ export function useEngineAnalysis(
   // requested, so navigating costs nothing — a search is GPU time, and the
   // engine finishes one even if the client hangs up, so an abandoned request
   // is paid for in full.
+  // Switching automatic analysis off cancels whatever it started. Keyed on
+  // `enabled` alone, deliberately: an earlier version also ran on every
+  // requestKey change, so merely stepping to the next ply aborted a search the
+  // user had explicitly asked for. The engine does not stop when the client
+  // hangs up, so that discarded a result already paid for in GPU time.
   useEffect(() => {
     if (!enabled) {
-      // The abort listener above clears the loading flag.
+      // The abort listener in runAnalysis clears the loading flag.
       abortRef.current?.abort();
-      return;
     }
+  }, [enabled]);
 
+  useEffect(() => {
+    if (!enabled) return;
     const timer = setTimeout(() => runRef.current(), debounceMs);
     return () => clearTimeout(timer);
     // requestKey collapses the inputs that matter; the rest are read through it.
   }, [requestKey, enabled, endpoint, debounceMs]);
-
-  // Results belong to the position that produced them; showing one position's
-  // numbers under another is worse than showing none, because they look
-  // authoritative. Reset during render rather than in an effect so the stale
-  // analysis is never painted for a frame first.
-  const resultKey = [engineFen ?? "", board, side, mode].join("|");
-  const [renderedForKey, setRenderedForKey] = useState(resultKey);
-  if (renderedForKey !== resultKey) {
-    setRenderedForKey(resultKey);
-    setAnalysis(null);
-  }
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -197,10 +238,13 @@ export function useEngineAnalysis(
     runRef.current();
   }, []);
 
+  // Both derived from the position on screen, so navigation needs no reset:
+  // an unanalysed position simply has no entry, and a failure on one position
+  // is not reported on another.
   return {
-    analysis,
+    analysis: cache.get(resultKey) ?? null,
     isAnalyzing,
-    error: fenError ?? error,
+    error: fenError ?? (failure?.key === resultKey ? failure.message : null),
     refresh,
   };
 }

@@ -2393,27 +2393,31 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
               isCompactLandscape ? "h-[280px] max-h-[60vh]" : "",
             ].join(" ")}
           >
-            {/* The engine panel sizes to its content; the move list takes the
-                rest, so the column keeps its existing height behaviour. */}
+            {/* The engine panel is capped and scrolls internally. Left to size
+                itself it grows with the line count and the length of each PV,
+                and since the move list is the flexible child it was the one
+                that collapsed -- the panel could squeeze it to nothing. */}
             <div className="flex h-full min-h-0 flex-col gap-2">
               {engineEndpoint ? (
-                <EngineLinesPanel
-                  analysis={engineAnalysis}
-                  isAnalyzing={isEngineAnalyzing}
-                  error={engineError}
-                  board={engineBoardId}
-                  side={engineSide}
-                  position={currentPosition}
-                  mode={engineMode}
-                  nodes={engineNodes}
-                  multipv={engineMultipv}
-                  onBoardChange={setEngineBoardId}
-                  onModeChange={setEngineMode}
-                  onNodesChange={setEngineNodes}
-                  onMultipvChange={setEngineMultipv}
-                  onRefresh={refreshEngineAnalysis}
-                  onPlayMove={handlePlayEngineMove}
-                />
+                <div className="min-h-0 max-h-[55%] overflow-y-auto">
+                  <EngineLinesPanel
+                    analysis={engineAnalysis}
+                    isAnalyzing={isEngineAnalyzing}
+                    error={engineError}
+                    board={engineBoardId}
+                    side={engineSide}
+                    position={currentPosition}
+                    mode={engineMode}
+                    nodes={engineNodes}
+                    multipv={engineMultipv}
+                    onBoardChange={setEngineBoardId}
+                    onModeChange={setEngineMode}
+                    onNodesChange={setEngineNodes}
+                    onMultipvChange={setEngineMultipv}
+                    onRefresh={refreshEngineAnalysis}
+                    onPlayMove={handlePlayEngineMove}
+                  />
+                </div>
               ) : null}
 
               <div className="min-h-0 flex-1">

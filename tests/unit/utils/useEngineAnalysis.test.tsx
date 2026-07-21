@@ -147,6 +147,95 @@ describe("useEngineAnalysis", () => {
     await waitFor(() => expect(result.current.isAnalyzing).toBe(false));
   });
 
+  describe("keeping analyses across navigation", () => {
+    const OTHER = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
+
+    /** Runs one search and settles it. */
+    async function analyse(
+      result: { current: { refresh: () => void } },
+      calls: Array<{ resolve: () => void }>,
+    ) {
+      const before = calls.length;
+      act(() => result.current.refresh());
+      await waitFor(() => expect(calls.length).toBe(before + 1));
+      await act(async () => {
+        calls[before].resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it("restores a position's analysis without re-searching it", async () => {
+      // A search is real GPU time; having paid for one, stepping away and back
+      // must not spend it again.
+      const { spy, calls } = deferredFetch();
+      const { result, rerender } = renderHook(
+        (props: { fen: string }) =>
+          useEngineAnalysis({
+            ...baseOptions, position: position(props.fen), enabled: false,
+          }),
+        { initialProps: { fen: START } },
+      );
+
+      await analyse(result, calls);
+      await waitFor(() => expect(result.current.analysis).not.toBeNull());
+
+      // Step forward: nothing has been analysed here, so nothing is shown.
+      rerender({ fen: OTHER });
+      expect(result.current.analysis).toBeNull();
+
+      // Step back: the earlier result returns, with no new request.
+      rerender({ fen: START });
+      expect(result.current.analysis?.lines[0].move).toBe("d2d4");
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it("files a late result under the position it started from", async () => {
+      // The search is not cancelled server-side, so a result can land after the
+      // user has navigated on. It must not be shown under the new position.
+      const { calls } = deferredFetch();
+      const { result, rerender } = renderHook(
+        (props: { fen: string }) =>
+          useEngineAnalysis({
+            ...baseOptions, position: position(props.fen), enabled: false,
+          }),
+        { initialProps: { fen: START } },
+      );
+
+      act(() => result.current.refresh());
+      await waitFor(() => expect(calls).toHaveLength(1));
+
+      rerender({ fen: OTHER });
+      await act(async () => {
+        calls[0].resolve();
+        await Promise.resolve();
+      });
+
+      expect(result.current.analysis).toBeNull(); // not this position's result
+      rerender({ fen: START });
+      expect(result.current.analysis?.lines[0].move).toBe("d2d4");
+    });
+
+    it("does not report one position's failure on another", async () => {
+      const { result, rerender } = renderHook(
+        (props: { fen: string }) =>
+          useEngineAnalysis({
+            ...baseOptions, position: position(props.fen), enabled: false,
+          }),
+        { initialProps: { fen: START } },
+      );
+
+      vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("network"))));
+      await act(async () => {
+        result.current.refresh();
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(result.current.error).not.toBeNull());
+
+      rerender({ fen: OTHER });
+      expect(result.current.error).toBeNull();
+    });
+  });
+
   it("reports a bad position without contacting the engine", async () => {
     const { spy } = deferredFetch();
     const { result } = renderHook(() =>
