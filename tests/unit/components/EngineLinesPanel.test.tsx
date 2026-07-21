@@ -183,15 +183,6 @@ describe("EngineLinesPanel", () => {
       expect(props.onMultipvChange).toHaveBeenCalledWith(5);
     });
 
-    it("says extra lines are free, unlike extra nodes", () => {
-      // 1 line and 8 lines cost the same search; only confidence differs.
-      renderPanel();
-      expect(screen.getByRole("button", { name: "5" })).toHaveAttribute(
-        "title",
-        expect.stringContaining("same search cost"),
-      );
-    });
-
     it("marks the active node budget and reports changes", () => {
       const { props } = renderPanel({ nodes: 50_000 });
       expect(screen.getByRole("button", { name: "50k" })).toHaveAttribute(
@@ -202,14 +193,33 @@ describe("EngineLinesPanel", () => {
       expect(props.onNodesChange).toHaveBeenCalledWith(200_000);
     });
 
-    it("surfaces the cost of each budget", () => {
-      // Nodes buy depth at a poor exchange rate, so the time cost has to be
-      // visible at the point of choosing.
+    it("surfaces the billed cost of each budget", () => {
+      // The cost worth showing is billed seconds, not search seconds: ~20s of
+      // fixed overhead lands on every request whatever budget it asks for.
+      // Showing search time alone made the small budgets look far cheaper than
+      // they bill, so every option has to carry its billed figure.
       renderPanel();
+      for (const label of ["50k", "200k", "500k"]) {
+        expect(screen.getByRole("button", { name: label })).toHaveAttribute(
+          "title",
+          expect.stringContaining("billed"),
+        );
+      }
+      // Concrete figure, not just the word "billed": it goes stale whenever the
+      // endpoint's GPU changes, and a stale cost label is worse than none.
       expect(screen.getByRole("button", { name: "200k" })).toHaveAttribute(
         "title",
-        expect.stringContaining("14s"),
+        expect.stringContaining("~45s billed"),
       );
+    });
+
+    it("offers no budget below the 50k floor", () => {
+      // 5k billed ~21s against 200k's ~48s -- 44% of the cost for 2.5% of the
+      // analysis. Sub-50k tiers are not a cheap option, only a wasteful one,
+      // and this is a deliberate removal rather than an oversight.
+      renderPanel();
+      expect(screen.queryByRole("button", { name: "5k" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "20k" })).toBeNull();
     });
 
     it("blocks a second search while one is running", () => {

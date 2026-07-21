@@ -55,23 +55,36 @@ interface EngineLinesPanelProps {
  * not time -- the search concentrates its visits on the moves it likes, so the
  * lower-ranked lines are backed by very few visits and their evaluations are
  * correspondingly weak. Watch the visit bar, not the rank.
+ *
+ * Every search asks the engine for the top option here regardless of the
+ * selection, so switching between these is a filter over a result already in
+ * hand -- no request, no wait. See ENGINE_MULTIPV in useEngineAnalysis.
  */
-const MULTIPV_OPTIONS = [1, 2, 3, 5] as const;
+const MULTIPV_OPTIONS = [1, 2, 3, 4, 5] as const;
 
 /**
  * Search budgets, with the cost of each made visible.
  *
- * Nodes are the effort you buy; depth is what it gets you, and the exchange
- * rate is poor -- measured on an RTX 4090 from the starting position, 100x the
- * nodes bought less than 2x the depth. Time, by contrast, scales linearly.
- * Showing depth and duration next to each option keeps that trade-off in front
- * of whoever is choosing.
+ * The cost worth showing is billed seconds, not search seconds. Every request
+ * pays roughly 20s of fixed overhead -- ~5.5s of worker startup plus the 15s
+ * `idleTimeout` -- whatever budget it asks for, so nodes are far cheaper
+ * against money than against wall clock. That is why the floor is 50k. The old
+ * 5k option billed ~21s against 200k's ~48s: 44% of the cost for 2.5% of the
+ * analysis, which made it not a cheap choice but a wasteful one.
+ *
+ * Durations are worst case on the endpoint's RTX 4000 Ada (8,196 nps, measured
+ * on a middlegame holding 18 pieces in hand — pocket size, not tactics, is what
+ * makes a bughouse position slow). The labels here once read 0.4s/1.4s/3.5s/14s,
+ * a flat 14,286 nps from the RTX 4090 dev pod that understated every tier ~2x.
+ *
+ * Depth is deliberately absent. At a fixed 20k nodes the same search reached
+ * depth 11 in the opening and 15 in a pawn endgame: effort is what you buy, and
+ * the depth it reaches is a property of the position, not of the budget.
  */
 const NODE_OPTIONS = [
-  { nodes: 5_000, label: "5k", detail: "~depth 10 · 0.4s" },
-  { nodes: 20_000, label: "20k", detail: "~depth 11 · 1.4s" },
-  { nodes: 50_000, label: "50k", detail: "~depth 12 · 3.5s" },
-  { nodes: 200_000, label: "200k", detail: "~depth 14 · 14s" },
+  { nodes: 50_000, label: "50k", detail: "~6s · ~27s billed" },
+  { nodes: 200_000, label: "200k", detail: "~24s · ~45s billed" },
+  { nodes: 500_000, label: "500k", detail: "~61s · ~82s billed" },
 ] as const;
 
 /**
@@ -280,7 +293,10 @@ export function EngineLinesPanel({
                     whole queen moves the evaluation only ~0.1, which reads as
                     "slight edge" to anyone importing chess intuition.
                   */}
-                  <span className="ml-auto font-mono text-sm tabular-nums text-slate-100">
+                  <span
+                    className="ml-auto font-mono text-sm tabular-nums text-slate-100"
+                    title="The engine's verdict on this move: +1 winning, 0 even, −1 losing."
+                  >
                     {formatEval(line)}
                   </span>
                 </div>
@@ -291,8 +307,14 @@ export function EngineLinesPanel({
                     style={{ width: confidenceWidth(line, totalVisits) }}
                     aria-hidden
                   />
-                  <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
-                    {formatVisits(line.visits)} visits · p={line.prior.toFixed(3)}
+                  <span className="shrink-0 text-xs tabular-nums text-slate-500">
+                    <span title="How much the engine studied this move.">
+                      {formatVisits(line.visits)} visits
+                    </span>{" "}
+                    ·{" "}
+                    <span title="The engine's instinct for this move before any calculation.">
+                      p={line.prior.toFixed(3)}
+                    </span>
                   </span>
                 </div>
 
@@ -314,11 +336,12 @@ export function EngineLinesPanel({
 
       {analysis && (
         <div className="flex gap-3 text-[10px] tabular-nums text-slate-500">
-          {analysis.depth !== null && <span>depth {analysis.depth}</span>}
           {analysis.nodes !== null && (
             <span>{analysis.nodes.toLocaleString()} nodes</span>
           )}
-          {analysis.timeMs !== null && <span>{analysis.timeMs} ms</span>}
+          {analysis.timeMs !== null && (
+            <span>{(analysis.timeMs / 1000).toFixed(1)} s</span>
+          )}
         </div>
       )}
     </div>
@@ -350,11 +373,6 @@ function MultiPvSelector({
             type="button"
             onClick={() => onChange(option)}
             aria-pressed={multipv === option}
-            title={
-              option === 1
-                ? "Best move only"
-                : `Top ${option} moves — same search cost as 1, but lower-ranked lines get few visits`
-            }
             className={`px-1.5 py-0.5 ${
               multipv === option
                 ? "bg-slate-700 text-slate-100"
@@ -432,6 +450,12 @@ function BoardSelector({
   );
 }
 
+/** Hover text per mode, keyed by the option it describes. */
+const MODE_TITLES: Record<EngineMode, string> = {
+  go: "downtime",
+  sit: "uptime (double-sitting allowed)",
+};
+
 /**
  * Mode control.
  *
@@ -447,19 +471,14 @@ function ModeSelector({
   onChange: (mode: EngineMode) => void;
 }) {
   return (
-    <div
-      className="flex overflow-hidden rounded border border-slate-700 text-xs"
-      title={
-        "go: your team is not up on time, so you may not both sit. " +
-        "sit: your team is up on time, so double-sitting is available."
-      }
-    >
+    <div className="flex overflow-hidden rounded border border-slate-700 text-xs">
       {(["go", "sit"] as const).map((option) => (
         <button
           key={option}
           type="button"
           onClick={() => onChange(option)}
           aria-pressed={mode === option}
+          title={MODE_TITLES[option]}
           className={`px-2 py-0.5 ${
             mode === option
               ? "bg-slate-700 text-slate-100"

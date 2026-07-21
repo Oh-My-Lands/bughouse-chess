@@ -2399,7 +2399,7 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
                 that collapsed -- the panel could squeeze it to nothing. */}
             <div className="flex h-full min-h-0 flex-col gap-2">
               {engineEndpoint ? (
-                <div className="min-h-0 max-h-[55%] overflow-y-auto">
+                <div className="min-h-0 max-h-[55%] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
                   <EngineLinesPanel
                     analysis={engineAnalysis}
                     isAnalyzing={isEngineAnalyzing}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { BughouseBoardId, BughousePositionSnapshot } from "@/app/types/analysis";
 import { EngineError, analyzePosition } from "@/app/utils/engine/engineClient";
@@ -15,6 +15,11 @@ export interface UseEngineAnalysisOptions {
   side: "white" | "black";
   /** Engine time model. Chosen explicitly; see engineMode. */
   mode: EngineMode;
+  /**
+   * How many lines to *show*. Not how many to search for: every request asks
+   * the engine for ENGINE_MULTIPV lines regardless, and this only decides how
+   * many of them are handed back. Changing it re-renders; it never re-searches.
+   */
   multipv?: number;
   nodes?: number;
   /**
@@ -46,6 +51,22 @@ export interface UseEngineAnalysisResult {
 const DEFAULT_DEBOUNCE_MS = 300;
 const DEFAULT_MULTIPV = 3;
 const DEFAULT_NODES = 50_000;
+
+/**
+ * How many lines every search asks for, whatever the user has chosen to see.
+ *
+ * The engine is MCTS: it visits every root move anyway, so reporting N lines
+ * costs the same search as reporting one -- MultiPV only decides how much of
+ * the finished tree gets printed. But it is a UCI option read *before* the
+ * search starts, so a line that was not requested cannot be recovered from a
+ * result afterwards.
+ *
+ * Requesting the maximum every time and slicing here is what makes the line
+ * count a free control. The alternative -- sending the user's choice -- would
+ * make raising it a cache miss, and a cache miss is a fresh RunPod job: ~20s
+ * of billed overhead to redisplay numbers the previous search already had.
+ */
+const ENGINE_MULTIPV = 5;
 
 /**
  * How many analyses to keep.
@@ -122,14 +143,13 @@ export function useEngineAnalysis(
   // One string covering everything that changes the answer. Mode is in here
   // because it feeds an NN plane and is hashed into the position key, so a
   // change makes the previous result describe different rules.
-  const requestKey = [
-    engineFen ?? "",
-    board,
-    side,
-    mode,
-    multipv,
-    nodes,
-  ].join("|");
+  //
+  // `multipv` is deliberately absent: every request asks for ENGINE_MULTIPV
+  // lines, so the user's choice cannot change the answer, only how much of it
+  // is shown. Including it would make each new line count look like a question
+  // the engine had not been asked yet, and spend a search re-deriving lines
+  // already sitting in the cache.
+  const requestKey = [engineFen ?? "", board, side, mode, nodes].join("|");
 
   // What a result is filed under. Narrower than requestKey on purpose: the
   // budget changes how good an answer is, not which question it answers, so a
@@ -160,7 +180,7 @@ export function useEngineAnalysis(
       position,
       board,
       side,
-      multipv,
+      multipv: ENGINE_MULTIPV,
       mode,
       nodes,
       signal: controller.signal,
@@ -238,11 +258,26 @@ export function useEngineAnalysis(
     runRef.current();
   }, []);
 
+  // Stored analyses always hold the full ENGINE_MULTIPV lines; the line count
+  // is applied on the way out. Memoised so that a render which changes neither
+  // the entry nor the count hands back the same object -- consumers compare
+  // `analysis` by identity. Short results are passed through untouched rather
+  // than copied, so slicing cannot introduce a new object where there is
+  // nothing to trim.
+  const cached = cache.get(resultKey) ?? null;
+  const analysis = useMemo(
+    () =>
+      cached && cached.lines.length > multipv
+        ? { ...cached, lines: cached.lines.slice(0, multipv) }
+        : cached,
+    [cached, multipv],
+  );
+
   // Both derived from the position on screen, so navigation needs no reset:
   // an unanalysed position simply has no entry, and a failure on one position
   // is not reported on another.
   return {
-    analysis: cache.get(resultKey) ?? null,
+    analysis,
     isAnalyzing,
     error: fenError ?? (failure?.key === resultKey ? failure.message : null),
     refresh,

@@ -248,4 +248,109 @@ describe("useEngineAnalysis", () => {
     expect(spy).not.toHaveBeenCalled();
     expect(result.current.error).toMatch(/could not encode/i);
   });
+
+  describe("line count", () => {
+    /** Five ranked lines, as a real MultiPV 5 search returns. */
+    const FIVE_LINES = {
+      output: {
+        ...RESPONSE.output,
+        lines: ["d2d4", "e2e4", "g1f3", "c2c4", "b1c3"].map((move, i) => ({
+          multipv: i + 1, move, partnerMove: null,
+          q: -0.02 * i, visits: 20000 - i * 4000, prior: 0.3 - i * 0.05,
+          score: { kind: "cp", value: -4 - i * 6 }, pv: [{ a: move, b: null }],
+        })),
+      },
+    };
+
+    /**
+     * Returns only as many lines as the request asked for, which is what the
+     * engine does -- MultiPV is set before the search and bounds what it
+     * prints. A mock that always returned five would pass no matter what the
+     * hook requested, and so would prove nothing.
+     */
+    function fiveLineFetch() {
+      const spy = vi.fn(async (_url: string, init: RequestInit) => {
+        const asked = JSON.parse(init.body as string).input.multipv ?? 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            output: {
+              ...FIVE_LINES.output,
+              lines: FIVE_LINES.output.lines.slice(0, asked),
+            },
+          }),
+        } as Response;
+      });
+      vi.stubGlobal("fetch", spy);
+      return spy;
+    }
+
+    it("asks the engine for the full set whatever the display count", async () => {
+      const spy = fiveLineFetch();
+      const { result } = renderHook(() =>
+        useEngineAnalysis({
+          ...baseOptions, position: position(), enabled: false, multipv: 1,
+        }),
+      );
+
+      await act(async () => {
+        result.current.refresh();
+      });
+
+      const body = JSON.parse(spy.mock.calls[0][1].body as string);
+      expect(body.input.multipv).toBe(5);
+    });
+
+    it("changing the count filters the cached result without re-searching", async () => {
+      // The point of the whole arrangement: MultiPV is free in the engine but
+      // fixed before the search starts, so the lines have to be fetched up
+      // front. If this ever re-requests, raising the count silently costs a
+      // fresh RunPod job to redisplay numbers already in hand.
+      const spy = fiveLineFetch();
+      const { result, rerender } = renderHook(
+        (props: { multipv: number }) =>
+          useEngineAnalysis({
+            ...baseOptions, position: position(), enabled: false, ...props,
+          }),
+        { initialProps: { multipv: 2 } },
+      );
+
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(result.current.analysis).not.toBeNull());
+      expect(result.current.analysis?.lines).toHaveLength(2);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      rerender({ multipv: 5 });
+      expect(result.current.analysis?.lines).toHaveLength(5);
+      expect(result.current.analysis?.lines[4].move).toBe("b1c3");
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      rerender({ multipv: 1 });
+      expect(result.current.analysis?.lines).toHaveLength(1);
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it("hands back a stable object when nothing relevant changed", async () => {
+      // Consumers compare `analysis` by identity, so a fresh slice on every
+      // render would defeat their memoisation.
+      fiveLineFetch();
+      const { result, rerender } = renderHook(() =>
+        useEngineAnalysis({
+          ...baseOptions, position: position(), enabled: false, multipv: 3,
+        }),
+      );
+
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(result.current.analysis).not.toBeNull());
+
+      const first = result.current.analysis;
+      rerender();
+      expect(result.current.analysis).toBe(first);
+    });
+  });
 });

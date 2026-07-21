@@ -55,7 +55,14 @@ const POLL_BACKOFF = 1.5;
  * caps too; this is the outer one that keeps abusive jobs from being dispatched
  * at all.
  */
-const MAX_NODES = 5_000_000;
+/*
+ * 4M, not 5M, because 5M cannot finish. At the measured worst case of 7,221 nps
+ * the endpoint's 600s `executionTimeoutMs` tops out near 4.33M nodes, and a
+ * `nodes` search that hits that timeout is the worst outcome available: it
+ * returns nothing and still bills the full 600s. The cap belongs below the
+ * ceiling rather than 15% above it.
+ */
+const MAX_NODES = 4_000_000;
 const MAX_MOVETIME_MS = 30_000;
 const MAX_MULTIPV = 20;
 
