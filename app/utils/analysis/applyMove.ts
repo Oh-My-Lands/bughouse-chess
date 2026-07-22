@@ -397,7 +397,14 @@ function buildDropKey(
   return `${board}:drop:${side}:${piece}@${to}`;
 }
 
-function forceToggleTurnAndClearEnPassant(chess: Chess) {
+/**
+ * Completes a drop that was placed with `put()`.
+ *
+ * `put()` only changes the placement, so the dropping side is still to move and
+ * a stale en passant target may survive a move it had nothing to do with. Both
+ * have to be fixed by hand because chess.js has no drop move to do it for us.
+ */
+export function forceToggleTurnAndClearEnPassant(chess: Chess) {
   const fenParts = chess.fen().split(" ");
   // Active color
   fenParts[1] = fenParts[1] === "w" ? "b" : "w";

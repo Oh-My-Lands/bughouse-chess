@@ -128,26 +128,53 @@ describe("pvToSan", () => {
     expect(got[2]).toEqual({ a: "d4", b: "e4" });
   });
 
-  it("stops converting a board after a drop, which it cannot replay", () => {
-    // The drop changes material chess.js is not tracking, so every position
-    // after it is wrong — later plies must not be dressed up as SAN.
+  it("keeps converting a board after a drop", () => {
+    // A drop is a playable move, not an unknowable one: the replay places the
+    // piece and passes the turn, so later plies are still named properly.
     const got = pvToSan(
       [
         { a: "e2e4", b: null },
-        { a: "P@e6", b: null },
+        { a: "N@e6", b: null },
         { a: "g1f3", b: null },
       ],
       position(),
     );
     expect(got[0].a).toBe("e4");
-    expect(got[1].a).toBe("P@e6");
-    expect(got[2].a).toBe("g1f3"); // raw UCI, not invented SAN
+    expect(got[1].a).toBe("N@e6");
+    expect(got[2].a).toBe("Nf3");
+  });
+
+  it("the drop is really on the board, not just skipped", () => {
+    // A knight on e5 also reaches f3, making g1f3 ambiguous and forcing
+    // "Ngf3". If the replay had merely passed the turn, this would read "Nf3".
+    const got = pvToSan(
+      [
+        { a: "N@e5", b: null },
+        { a: "d7d5", b: null },
+        { a: "g1f3", b: null },
+      ],
+      position(),
+    );
+    expect(got[2].a).toBe("Ngf3");
+  });
+
+  it("gives up on a drop it cannot trust", () => {
+    // e2 is occupied at the start, so this is not the position we think it is.
+    const got = pvToSan(
+      [
+        { a: "P@e2", b: null },
+        { a: "g1f3", b: null },
+      ],
+      position(),
+    );
+    expect(got[0].a).toBe("P@e2");
+    expect(got[1].a).toBe("g1f3"); // raw UCI, not invented SAN
   });
 
   it("a desync on one board does not affect the other", () => {
     const got = pvToSan(
       [
-        { a: "P@e6", b: "e2e4" },
+        { a: "P@e2", b: "e2e4" },
         { a: "g1f3", b: "e7e5" },
       ],
       position(),
@@ -195,15 +222,15 @@ describe("pvToSan", () => {
       // No team colours, and a desynced board after a drop: guessing "not on
       // turn" would assert something unverified.
       expect(pvToSan([{ a: "e2e4", b: null }], position())[0].b).toBe("sit");
-      const afterDrop = pvToSan(
+      const afterDesync = pvToSan(
         [
-          { a: "P@e6", b: null },
+          { a: "P@e2", b: null },
           { a: null, b: null },
         ],
         position(),
         colours,
       );
-      expect(afterDrop[1].a).toBe("sit");
+      expect(afterDesync[1].a).toBe("sit");
     });
   });
 

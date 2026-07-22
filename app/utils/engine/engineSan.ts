@@ -1,5 +1,6 @@
-import { Chess } from "chess.js";
+import { Chess, type PieceSymbol, type Square } from "chess.js";
 
+import { forceToggleTurnAndClearEnPassant } from "@/app/utils/analysis/applyMove";
 import { teamFor } from "@/app/utils/engine/engineMode";
 import type {
   BughouseBoardId,
@@ -69,6 +70,37 @@ function formatDrop(uci: string): string | null {
 }
 
 /**
+ * Plays a drop onto a replay board, so conversion can continue past it.
+ *
+ * chess.js has no drop move, but a drop is not an unknowable position: it puts
+ * a piece of the side to move on an empty square and passes the turn. That is
+ * exactly what applyMove does for real analysis input, and it is reused here so
+ * there is one definition of what a drop does to a board.
+ *
+ * Reserves are deliberately not consulted. This renders a move the engine has
+ * already chosen rather than validating a user's input, so the only checks made
+ * are the ones needed to be sure the resulting position is right: an occupied
+ * square or a pawn on the back rank means the drop was not what we think it
+ * was, and the caller falls back to raw UCI rather than replay a fiction.
+ */
+function applyDropToReplay(chess: Chess, uci: string): boolean {
+  const parsed = uci.match(/^([A-Za-z])@([a-h][1-8])$/);
+  if (!parsed) return false;
+
+  const piece = parsed[1].toLowerCase();
+  const to = parsed[2] as Square;
+  if (!/^[pnbrq]$/.test(piece)) return false;
+  if (piece === "p" && (to[1] === "1" || to[1] === "8")) return false;
+  if (chess.get(to)) return false;
+
+  if (!chess.put({ type: piece as PieceSymbol, color: chess.turn() }, to)) {
+    return false;
+  }
+  forceToggleTurnAndClearEnPassant(chess);
+  return true;
+}
+
+/**
  * Converts one UCI move to SAN in the context of `fen`.
  *
  * Returns the raw UCI unchanged if the position will not load, the move is not
@@ -128,11 +160,13 @@ export interface JointPly {
  * a `null` half means that board simply did not move on that ply, so its side
  * to move is unchanged.
  *
- * Replay stops for a board the moment a ply cannot be applied — most often a
- * drop, which chess.js has no concept of, and which also changes material in a
- * way the replay cannot track. From that point on the board emits raw UCI,
- * because every position after an unapplied move is wrong and any SAN derived
- * from it would be fiction.
+ * Drops are replayed too, via applyDropToReplay, so a line that opens with one
+ * still reads as notation rather than collapsing into UCI for the rest of the
+ * board.
+ *
+ * Replay stops for a board the moment a ply cannot be applied. From that point
+ * on the board emits raw UCI, because every position after an unapplied move is
+ * wrong and any SAN derived from it would be fiction.
  */
 export function pvToSan(
   pv: readonly JointPly[],
@@ -196,8 +230,8 @@ export function pvToSan(
 
         const drop = formatDrop(uci);
         if (drop) {
-          // chess.js cannot apply a drop, so the replay is over for this board.
-          state.chess = null;
+          // A drop that will not apply leaves the position unknown from here on.
+          if (!applyDropToReplay(state.chess, uci)) state.chess = null;
           acc[key] = drop;
           return acc;
         }
