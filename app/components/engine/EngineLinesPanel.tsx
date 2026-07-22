@@ -15,6 +15,8 @@ import {
   teamColoursFor,
 } from "../../utils/engine/engineSan";
 import type { EngineAnalysis, EngineLine } from "../../utils/engine/engineClient";
+import { useShowAllPlies } from "../../utils/preferences/useShowAllPlies";
+import { setShowAllPlies } from "../../utils/preferences/userPreferencesService";
 import type { EngineMode } from "../../utils/engine/engineMode";
 
 interface EngineLinesPanelProps {
@@ -126,16 +128,21 @@ function titleFor(label: string): string | undefined {
   return label === NOT_ON_TURN_LABEL ? "Not on turn -- no move possible" : undefined;
 }
 
+/** Plies shown per candidate line when not showing the full variation. */
+const PV_PREVIEW_PLIES = 6;
+
 function PvPreview({
   line,
   board,
   side,
   position,
+  showAllPlies,
 }: {
   line: EngineLine;
   board: BughouseBoardId;
   side: BughouseSide;
   position: BughousePositionSnapshot | null;
+  showAllPlies: boolean;
 }) {
   // PVs are joint actions over both boards. Showing only the user's half would
   // misrepresent the line, since the partner's moves are part of why it scores
@@ -145,7 +152,8 @@ function PvPreview({
   // it is played in, so the variation has to be replayed from the start.
   // Team colours let the replay tell a chosen wait from a forced one, so a
   // partner who simply is not on turn does not read as a decision to stall.
-  const plies = pvToSan(line.pv.slice(0, 6), position, teamColoursFor(board, side));
+  const pv = showAllPlies ? line.pv : line.pv.slice(0, PV_PREVIEW_PLIES);
+  const plies = pvToSan(pv, position, teamColoursFor(board, side));
   return (
     <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-slate-400">
       {plies.map((ply, index) => {
@@ -193,12 +201,25 @@ export function EngineLinesPanel({
 }: EngineLinesPanelProps) {
   const lines = analysis?.lines ?? [];
   const totalVisits = lines.reduce((sum, line) => sum + line.visits, 0);
+  const showAllPlies = useShowAllPlies();
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-slate-200">Engine</span>
+          <label
+            className="flex cursor-pointer items-center gap-1 text-xs text-slate-400 hover:text-slate-300"
+            title="Show each candidate's full line instead of the first few moves"
+          >
+            <input
+              type="checkbox"
+              checked={showAllPlies}
+              onChange={(e) => setShowAllPlies(e.target.checked)}
+              className="h-3 w-3 rounded border-slate-600 bg-slate-800 text-mariner-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-mariner-400/60"
+            />
+            All plies
+          </label>
           {isAnalyzing && (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
           )}
@@ -323,6 +344,7 @@ export function EngineLinesPanel({
                   board={board}
                   side={side}
                   position={position}
+                  showAllPlies={showAllPlies}
                 />
               </button>
             </li>
