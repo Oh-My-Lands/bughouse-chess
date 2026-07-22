@@ -316,7 +316,7 @@ export function EngineLinesPanel({
                   */}
                   <span
                     className="ml-auto font-mono text-sm tabular-nums text-slate-100"
-                    title="The engine's verdict on this move: +1 winning, 0 even, −1 losing."
+                    title="The engine's verdict on this move, from the analysed side's view: +1 winning, 0 even, −1 losing. Mates show as #N."
                   >
                     {formatEval(line)}
                   </span>
