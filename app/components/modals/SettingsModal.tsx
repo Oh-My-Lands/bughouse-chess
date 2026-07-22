@@ -8,13 +8,11 @@ import {
   getBoardAnnotationColorFromLocalStorage,
   saveBoardAnnotationColorToLocalStorage,
   removeBoardAnnotationColorFromLocalStorage,
-  saveUserPreferencesToFirestore,
   DEFAULT_BOARD_ANNOTATION_COLOR,
   loadAutoAdvanceLiveReplayPreference,
   saveAutoAdvanceLiveReplayToLocalStorage,
   loadPieceValuePresetPreference,
   savePieceValuePresetToLocalStorage,
-  type UserPreferences,
 } from "../../utils/preferences/userPreferencesService";
 import {
   DEFAULT_PIECE_VALUE_PRESET,
@@ -88,11 +86,6 @@ export interface SettingsModalProps {
   open: boolean;
 
   /**
-   * The user's Firebase Auth UID (null for non-authenticated users).
-   */
-  userId: string | null;
-
-  /**
    * Position of the settings button (for positioning the popout).
    */
   buttonPosition: { top: number; left: number; width: number; height: number };
@@ -113,7 +106,6 @@ export interface SettingsModalProps {
  */
 export default function SettingsModal({
   open,
-  userId,
   buttonPosition,
   onClose,
 }: SettingsModalProps) {
@@ -176,7 +168,7 @@ export default function SettingsModal({
   ]);
 
   /**
-   * Saves the preference to Firestore (if authenticated) and closes the modal.
+   * Saves the preferences to localStorage and closes the modal.
    */
   const handleSave = useCallback(async () => {
     if (isSaving) return;
@@ -184,41 +176,17 @@ export default function SettingsModal({
     setIsSaving(true);
 
     try {
-      // If authenticated, save to Firestore
-      if (userId) {
-        const preferences: UserPreferences = {
-          boardAnnotationColor: selectedColor,
-          autoAdvanceLiveReplay,
-          pieceValuePreset,
-        };
-        saveAutoAdvanceLiveReplayToLocalStorage(autoAdvanceLiveReplay);
-        savePieceValuePresetToLocalStorage(pieceValuePreset);
-        await saveUserPreferencesToFirestore(userId, preferences);
-        toast.success("Settings saved!");
+      saveAutoAdvanceLiveReplayToLocalStorage(autoAdvanceLiveReplay);
+      savePieceValuePresetToLocalStorage(pieceValuePreset);
+      // Board color localStorage is already updated in real-time.
+      toast.success("Settings saved!");
 
-        // Log analytics for successful save
-        logAnalyticsEvent(analytics, "settings_saved", {
-          user_authenticated: "true",
-          color_changed: selectedColor !== initialColor ? "true" : "false",
-          auto_advance_live_replay: autoAdvanceLiveReplay ? "true" : "false",
-          piece_value_preset: pieceValuePreset,
-          storage_type: "firestore",
-        });
-      } else {
-        saveAutoAdvanceLiveReplayToLocalStorage(autoAdvanceLiveReplay);
-        savePieceValuePresetToLocalStorage(pieceValuePreset);
-        // For non-authenticated users, board color localStorage is already updated in real-time
-        toast.success("Settings saved!");
-
-        // Log analytics for successful save
-        logAnalyticsEvent(analytics, "settings_saved", {
-          user_authenticated: "false",
-          color_changed: selectedColor !== initialColor ? "true" : "false",
-          auto_advance_live_replay: autoAdvanceLiveReplay ? "true" : "false",
-          piece_value_preset: pieceValuePreset,
-          storage_type: "localStorage",
-        });
-      }
+      logAnalyticsEvent(analytics, "settings_saved", {
+        color_changed: selectedColor !== initialColor ? "true" : "false",
+        auto_advance_live_replay: autoAdvanceLiveReplay ? "true" : "false",
+        piece_value_preset: pieceValuePreset,
+        storage_type: "localStorage",
+      });
 
       // Update initial color to the saved color
       setInitialColor(selectedColor);
@@ -229,9 +197,7 @@ export default function SettingsModal({
       console.error("[SettingsModal] Failed to save preferences:", err);
       const message = err instanceof Error ? err.message : "Failed to save settings";
 
-      // Log analytics for save error
       logAnalyticsEvent(analytics, "settings_save_error", {
-        user_authenticated: userId ? "true" : "false",
         error: message,
       });
 
@@ -241,7 +207,6 @@ export default function SettingsModal({
     }
   }, [
     isSaving,
-    userId,
     selectedColor,
     initialColor,
     autoAdvanceLiveReplay,
@@ -254,9 +219,7 @@ export default function SettingsModal({
   useEffect(() => {
     if (open) {
       let isActive = true;
-      logAnalyticsEvent(analytics, "settings_modal_opened", {
-        user_authenticated: userId ? "true" : "false",
-      });
+      logAnalyticsEvent(analytics, "settings_modal_opened");
       const currentColor = getBoardAnnotationColorFromLocalStorage();
       setSelectedColor(currentColor);
       setInitialColor(currentColor);
@@ -264,8 +227,8 @@ export default function SettingsModal({
 
       void (async () => {
         const [autoAdvancePreference, pieceValuePreference] = await Promise.all([
-          loadAutoAdvanceLiveReplayPreference(userId),
-          loadPieceValuePresetPreference(userId),
+          loadAutoAdvanceLiveReplayPreference(),
+          loadPieceValuePresetPreference(),
         ]);
         if (!isActive) return;
         setAutoAdvanceLiveReplay(autoAdvancePreference);
@@ -278,7 +241,7 @@ export default function SettingsModal({
         isActive = false;
       };
     }
-  }, [open, analytics, userId]);
+  }, [open, analytics]);
 
   // Measure modal height after render to calculate bottom alignment
   useEffect(() => {

@@ -6,10 +6,6 @@
  */
 
 import "./commands";
-import { registerFirebaseCommands } from "./firebase";
-
-// Register Firebase Auth and Firestore emulator commands
-registerFirebaseCommands();
 
 /* -------------------------------------------------------------------------- */
 /* Cypress Custom Commands for E2E Tests                                      */
@@ -35,15 +31,6 @@ declare global {
        * @param gameId - The Chess.com game ID to load
        */
       loadGame(gameId: string): Chainable<void>;
-
-      /**
-       * Signs in a test user and ensures the auth state is reflected in the UI.
-       * @param options - Optional user creation settings
-       */
-      signInAndVerify(options?: {
-        email?: string;
-        displayName?: string;
-      }): Chainable<{ uid: string; email: string }>;
     }
   }
 }
@@ -85,46 +72,12 @@ Cypress.Commands.add("loadGame", (gameId: string) => {
   cy.waitForPageLoad();
 });
 
-/**
- * Sign in a test user and verify the UI reflects authenticated state.
- */
-Cypress.Commands.add("signInAndVerify", (options = {}) => {
-  const email = options.email ?? `test-${Date.now()}@example.com`;
-  const password = "testpassword123";
-  const displayName = options.displayName ?? "Test User";
-
-  return cy.createTestUser({ email, password, displayName }).then((user) => {
-    return cy.signInTestUser(email, password).then(() => {
-      // The auth state should update in the app
-      // This may require a page reload in E2E tests
-      return cy.wrap({ uid: user.uid, email: user.email });
-    });
-  });
-});
-
 /* -------------------------------------------------------------------------- */
 /* Global Event Handlers                                                      */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Handle uncaught exceptions from Firebase Analytics in test environment.
- */
 Cypress.on("uncaught:exception", (err) => {
   const errorMessage = err.message || "";
-  const errorCode = (err as { code?: string }).code || "";
-  const errorString = err.toString();
-
-  // Ignore Firebase Analytics config fetch errors
-  if (
-    errorMessage.includes("Analytics: Dynamic config fetch failed") ||
-    errorMessage.includes("analytics/config-fetch-failed") ||
-    errorMessage.includes("API key not valid") ||
-    errorString.includes("Analytics: Dynamic config fetch failed") ||
-    errorString.includes("analytics/config-fetch-failed") ||
-    errorCode === "analytics/config-fetch-failed"
-  ) {
-    return false;
-  }
 
   // Ignore hydration errors from Next.js (common in E2E tests)
   if (
@@ -136,10 +89,3 @@ Cypress.on("uncaught:exception", (err) => {
 
   return true;
 });
-
-/* -------------------------------------------------------------------------- */
-/* Test Lifecycle Hooks                                                       */
-/* -------------------------------------------------------------------------- */
-
-// Note: Emulator clearing is handled by individual tests using cy.clearEmulators()
-// This gives tests more control over their setup and prevents race conditions.

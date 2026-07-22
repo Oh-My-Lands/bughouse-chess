@@ -31,24 +31,16 @@ vi.mock("react-hot-toast", () => ({
   },
 }));
 
-// Mock userPreferencesService
+// Mock userPreferencesService (localStorage-only)
 vi.mock("@/app/utils/preferences/userPreferencesService", () => ({
   getBoardAnnotationColorFromLocalStorage: vi.fn(),
   saveBoardAnnotationColorToLocalStorage: vi.fn(),
   removeBoardAnnotationColorFromLocalStorage: vi.fn(),
-  saveUserPreferencesToFirestore: vi.fn(),
   loadAutoAdvanceLiveReplayPreference: vi.fn(),
   saveAutoAdvanceLiveReplayToLocalStorage: vi.fn(),
   loadPieceValuePresetPreference: vi.fn(),
   savePieceValuePresetToLocalStorage: vi.fn(),
   DEFAULT_BOARD_ANNOTATION_COLOR: "rgb(52, 168, 83, 0.95)",
-}));
-
-// Mock firebase/firestore
-vi.mock("firebase/firestore", () => ({
-  doc: vi.fn(),
-  getDoc: vi.fn(),
-  setDoc: vi.fn(),
 }));
 
 describe("SettingsModal", () => {
@@ -71,12 +63,7 @@ describe("SettingsModal", () => {
 
   it("does not render when open is false", () => {
     render(
-      <SettingsModal
-        open={false}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={false} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -84,12 +71,7 @@ describe("SettingsModal", () => {
 
   it("renders when open is true", () => {
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
@@ -105,12 +87,7 @@ describe("SettingsModal", () => {
     vi.mocked(userPreferencesService.loadAutoAdvanceLiveReplayPreference).mockResolvedValue(true);
 
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     const checkbox = screen.getByRole("checkbox");
@@ -126,12 +103,7 @@ describe("SettingsModal", () => {
     );
 
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     expect(userPreferencesService.getBoardAnnotationColorFromLocalStorage).toHaveBeenCalled();
@@ -139,12 +111,7 @@ describe("SettingsModal", () => {
 
   it("updates CSS variable in real-time when color changes", async () => {
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     const colorSwatch = screen.getByTestId("color-swatch");
@@ -164,12 +131,7 @@ describe("SettingsModal", () => {
 
   it("saves to localStorage in real-time when color changes", async () => {
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     const colorSwatch = screen.getByTestId("color-swatch");
@@ -187,12 +149,7 @@ describe("SettingsModal", () => {
   it("calls onClose when Cancel is clicked", () => {
     const onClose = vi.fn();
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={onClose}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={onClose} />,
     );
 
     const cancelButton = screen.getByText("Cancel");
@@ -208,12 +165,7 @@ describe("SettingsModal", () => {
     );
 
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     // Change color
@@ -233,17 +185,11 @@ describe("SettingsModal", () => {
     });
   });
 
-  it("saves to Firestore when Save is clicked and user is authenticated", async () => {
-    vi.mocked(userPreferencesService.saveUserPreferencesToFirestore).mockResolvedValue(undefined);
+  it("saves preferences to localStorage when Save is clicked", async () => {
     vi.mocked(userPreferencesService.loadAutoAdvanceLiveReplayPreference).mockResolvedValue(true);
 
     render(
-      <SettingsModal
-        open={true}
-        userId="user123"
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     await waitFor(() => {
@@ -263,27 +209,15 @@ describe("SettingsModal", () => {
     });
 
     await waitFor(() => {
-      expect(userPreferencesService.saveUserPreferencesToFirestore).toHaveBeenCalledWith(
-        "user123",
-        {
-          boardAnnotationColor: "rgb(255, 0, 0, 0.95)",
-          autoAdvanceLiveReplay: true,
-          pieceValuePreset: "bughouse",
-        },
-      );
+      expect(userPreferencesService.saveAutoAdvanceLiveReplayToLocalStorage).toHaveBeenCalledWith(true);
     });
-
+    expect(userPreferencesService.savePieceValuePresetToLocalStorage).toHaveBeenCalledWith("bughouse");
     expect(toast.success).toHaveBeenCalledWith("Settings saved!");
   });
 
-  it("shows success toast for non-authenticated users when Save is clicked", async () => {
+  it("shows success toast when Save is clicked", async () => {
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     const saveButton = screen.getByText("Save");
@@ -298,19 +232,11 @@ describe("SettingsModal", () => {
     await waitFor(() => {
       expect(userPreferencesService.saveAutoAdvanceLiveReplayToLocalStorage).toHaveBeenCalledWith(false);
     });
-    expect(userPreferencesService.saveUserPreferencesToFirestore).not.toHaveBeenCalled();
   });
 
-  it("saves the standard piece value preset locally and to Firestore", async () => {
-    vi.mocked(userPreferencesService.saveUserPreferencesToFirestore).mockResolvedValue(undefined);
-
+  it("saves the standard piece value preset to localStorage", async () => {
     render(
-      <SettingsModal
-        open={true}
-        userId="user123"
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     const standardPreset = await screen.findByRole("radio", { name: /Standard chess/ });
@@ -323,23 +249,15 @@ describe("SettingsModal", () => {
     expect(userPreferencesService.savePieceValuePresetToLocalStorage).toHaveBeenCalledWith(
       "standard",
     );
-    expect(userPreferencesService.saveUserPreferencesToFirestore).toHaveBeenCalledWith(
-      "user123",
-      expect.objectContaining({ pieceValuePreset: "standard" }),
-    );
   });
 
   it("handles save errors gracefully", async () => {
-    const error = new Error("Firestore error");
-    vi.mocked(userPreferencesService.saveUserPreferencesToFirestore).mockRejectedValue(error);
+    vi.mocked(userPreferencesService.savePieceValuePresetToLocalStorage).mockImplementation(() => {
+      throw new Error("localStorage error");
+    });
 
     render(
-      <SettingsModal
-        open={true}
-        userId="user123"
-        buttonPosition={defaultButtonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={vi.fn()} />,
     );
 
     const saveButton = screen.getByText("Save");
@@ -348,51 +266,19 @@ describe("SettingsModal", () => {
     });
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Firestore error");
+      expect(toast.error).toHaveBeenCalledWith("localStorage error");
     });
   });
 
   it("closes modal when Escape key is pressed", () => {
     const onClose = vi.fn();
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={defaultButtonPosition}
-        onClose={onClose}
-      />,
+      <SettingsModal open={true} buttonPosition={defaultButtonPosition} onClose={onClose} />,
     );
 
     fireEvent.keyDown(document, { key: "Escape" });
 
     expect(onClose).toHaveBeenCalled();
-  });
-
-  it("does not close on Escape when saving", async () => {
-    const onClose = vi.fn();
-    vi.mocked(userPreferencesService.saveUserPreferencesToFirestore).mockImplementation(
-      () => new Promise((resolve) => setTimeout(resolve, 100)),
-    );
-
-    render(
-      <SettingsModal
-        open={true}
-        userId="user123"
-        buttonPosition={defaultButtonPosition}
-        onClose={onClose}
-      />,
-    );
-
-    const saveButton = screen.getByText("Save");
-    await act(async () => {
-      fireEvent.click(saveButton);
-    });
-
-    // Try to escape while saving
-    fireEvent.keyDown(document, { key: "Escape" });
-
-    // Should not close while saving
-    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("positions modal correctly relative to button", () => {
@@ -404,12 +290,7 @@ describe("SettingsModal", () => {
     };
 
     render(
-      <SettingsModal
-        open={true}
-        userId={null}
-        buttonPosition={buttonPosition}
-        onClose={vi.fn()}
-      />,
+      <SettingsModal open={true} buttonPosition={buttonPosition} onClose={vi.fn()} />,
     );
 
     const modal = screen.getByRole("dialog");

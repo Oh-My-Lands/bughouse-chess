@@ -6,30 +6,13 @@ import {
   getAutoAdvanceLiveReplayFromLocalStorage,
   saveAutoAdvanceLiveReplayToLocalStorage,
   removeAutoAdvanceLiveReplayFromLocalStorage,
-  loadUserPreferencesFromFirestore,
-  saveUserPreferencesToFirestore,
   loadBoardAnnotationColor,
   loadAutoAdvanceLiveReplayPreference,
   getPieceValuePresetFromLocalStorage,
   savePieceValuePresetToLocalStorage,
   loadPieceValuePresetPreference,
   DEFAULT_BOARD_ANNOTATION_COLOR,
-  type UserPreferences,
 } from "@/app/utils/preferences/userPreferencesService";
-import { doc, getDoc, setDoc } from "firebase/firestore";
-import type { Firestore, DocumentReference, DocumentSnapshot } from "firebase/firestore";
-import { getFirestoreDb } from "@/app/utils/platform/firebaseClient";
-
-// Mock Firebase
-vi.mock("firebase/firestore", () => ({
-  doc: vi.fn(),
-  getDoc: vi.fn(),
-  setDoc: vi.fn(),
-}));
-
-vi.mock("@/app/utils/platform/firebaseClient", () => ({
-  getFirestoreDb: vi.fn(),
-}));
 
 function createStorageMock(initial: Record<string, string> = {}): {
   storage: Storage;
@@ -301,369 +284,63 @@ describe("userPreferencesService - localStorage operations", () => {
   });
 });
 
-describe("userPreferencesService - Firestore operations", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  describe("loadUserPreferencesFromFirestore", () => {
-    it("returns null when document does not exist", async () => {
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const mockDocSnap = {
-        exists: () => false,
-      } as DocumentSnapshot;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockResolvedValue(mockDocSnap);
-
-      const result = await loadUserPreferencesFromFirestore("user123");
-
-      expect(result).toBeNull();
-      expect(doc).toHaveBeenCalledWith(mockDb, "users", "user123", "userPreferences", "settings");
-      expect(getDoc).toHaveBeenCalledWith(mockDocRef);
-    });
-
-    it("returns preferences when document exists", async () => {
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const customColor = "rgb(255, 0, 0, 0.95)";
-      const autoAdvanceLiveReplay = true;
-      const mockDocSnap = {
-        exists: () => true,
-        data: () => ({
-          boardAnnotationColor: customColor,
-          autoAdvanceLiveReplay,
-          pieceValuePreset: "standard",
-        }),
-      } as unknown as DocumentSnapshot;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockResolvedValue(mockDocSnap);
-
-      const result = await loadUserPreferencesFromFirestore("user123");
-
-      expect(result).toEqual({
-        boardAnnotationColor: customColor,
-        autoAdvanceLiveReplay,
-        pieceValuePreset: "standard",
-      });
-    });
-
-    it("returns default color when document exists but field is missing", async () => {
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const mockDocSnap = {
-        exists: () => true,
-        data: () => ({}),
-      } as unknown as DocumentSnapshot;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockResolvedValue(mockDocSnap);
-
-      const result = await loadUserPreferencesFromFirestore("user123");
-
-      expect(result).toEqual({
-        boardAnnotationColor: DEFAULT_BOARD_ANNOTATION_COLOR,
-        autoAdvanceLiveReplay: false,
-        pieceValuePreset: "bughouse",
-      });
-    });
-
-    it("handles errors gracefully", async () => {
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockRejectedValue(new Error("Firestore error"));
-
-      const result = await loadUserPreferencesFromFirestore("user123");
-
-      expect(result).toBeNull();
-    });
-  });
-
-  describe("saveUserPreferencesToFirestore", () => {
-    it("saves preferences to Firestore", async () => {
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const preferences: UserPreferences = {
-        boardAnnotationColor: "rgb(255, 0, 0, 0.95)",
-        autoAdvanceLiveReplay: false,
-        pieceValuePreset: "standard",
-      };
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(setDoc).mockResolvedValue(undefined);
-
-      await saveUserPreferencesToFirestore("user123", preferences);
-
-      expect(doc).toHaveBeenCalledWith(mockDb, "users", "user123", "userPreferences", "settings");
-      expect(setDoc).toHaveBeenCalledWith(mockDocRef, preferences, { merge: true });
-    });
-
-    it("throws error when Firestore save fails", async () => {
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const preferences: UserPreferences = {
-        boardAnnotationColor: "rgb(255, 0, 0, 0.95)",
-        autoAdvanceLiveReplay: true,
-        pieceValuePreset: "bughouse",
-      };
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(setDoc).mockRejectedValue(new Error("Firestore error"));
-
-      await expect(saveUserPreferencesToFirestore("user123", preferences)).rejects.toThrow(
-        "Firestore error",
-      );
-    });
-  });
-});
-
-describe("userPreferencesService - unified loading", () => {
+describe("userPreferencesService - unified loading (localStorage only)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   describe("loadBoardAnnotationColor", () => {
-    it("returns localStorage value when present", async () => {
+    it("returns the localStorage value when present", async () => {
       const customColor = "rgb(255, 0, 0, 0.95)";
       const { storage } = createStorageMock({
         "bh-board-annotation-color": customColor,
       });
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
+      Object.defineProperty(window, "localStorage", { value: storage, writable: true });
 
-      const color = await loadBoardAnnotationColor("user123");
-
-      expect(color).toBe(customColor);
-      // Should not call Firestore when localStorage has value
-      expect(getDoc).not.toHaveBeenCalled();
+      await expect(loadBoardAnnotationColor()).resolves.toBe(customColor);
     });
 
-    it("loads from Firestore when localStorage is empty and user is authenticated", async () => {
+    it("returns the default when localStorage is empty", async () => {
       const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
+      Object.defineProperty(window, "localStorage", { value: storage, writable: true });
 
-      const customColor = "rgb(255, 0, 0, 0.95)";
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const mockDocSnap = {
-        exists: () => true,
-        data: () => ({
-          boardAnnotationColor: customColor,
-        }),
-      } as unknown as DocumentSnapshot;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockResolvedValue(mockDocSnap);
-
-      const color = await loadBoardAnnotationColor("user123");
-
-      expect(color).toBe(customColor);
-      expect(getDoc).toHaveBeenCalled();
-      // Should sync to localStorage
-      expect(storage.getItem("bh-board-annotation-color")).toBe(customColor);
-    });
-
-    it("returns default when localStorage is empty and user is not authenticated", async () => {
-      const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
-
-      const color = await loadBoardAnnotationColor(null);
-
-      expect(color).toBe(DEFAULT_BOARD_ANNOTATION_COLOR);
-      expect(getDoc).not.toHaveBeenCalled();
-    });
-
-    it("returns default when localStorage is empty and Firestore document does not exist", async () => {
-      const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
-
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const mockDocSnap = {
-        exists: () => false,
-      } as unknown as DocumentSnapshot;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockResolvedValue(mockDocSnap);
-
-      const color = await loadBoardAnnotationColor("user123");
-
-      expect(color).toBe(DEFAULT_BOARD_ANNOTATION_COLOR);
-    });
-
-    it("handles Firestore errors gracefully and returns default", async () => {
-      const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
-
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockRejectedValue(new Error("Firestore error"));
-
-      const color = await loadBoardAnnotationColor("user123");
-
-      expect(color).toBe(DEFAULT_BOARD_ANNOTATION_COLOR);
+      await expect(loadBoardAnnotationColor()).resolves.toBe(DEFAULT_BOARD_ANNOTATION_COLOR);
     });
   });
 
   describe("loadAutoAdvanceLiveReplayPreference", () => {
-    it("returns localStorage value when present", async () => {
+    it("returns the stored preference when present", async () => {
       const { storage } = createStorageMock({
-        "bh-auto-advance-live-replay": "false",
+        "bh-auto-advance-live-replay": "true",
       });
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
+      Object.defineProperty(window, "localStorage", { value: storage, writable: true });
 
-      const preference = await loadAutoAdvanceLiveReplayPreference("user123");
-
-      expect(preference).toBe(false);
-      expect(getDoc).not.toHaveBeenCalled();
+      await expect(loadAutoAdvanceLiveReplayPreference()).resolves.toBe(true);
     });
 
-    it("loads from Firestore when localStorage is empty and user is authenticated", async () => {
+    it("returns false by default", async () => {
       const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
+      Object.defineProperty(window, "localStorage", { value: storage, writable: true });
 
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const mockDocSnap = {
-        exists: () => true,
-        data: () => ({
-          autoAdvanceLiveReplay: true,
-        }),
-      } as unknown as DocumentSnapshot;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockResolvedValue(mockDocSnap);
-
-      const preference = await loadAutoAdvanceLiveReplayPreference("user123");
-
-      expect(preference).toBe(true);
-      expect(getDoc).toHaveBeenCalled();
-      expect(storage.getItem("bh-auto-advance-live-replay")).toBe("true");
-    });
-
-    it("returns default when localStorage is empty and user is not authenticated", async () => {
-      const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
-
-      const preference = await loadAutoAdvanceLiveReplayPreference(null);
-
-      expect(preference).toBe(false);
-      expect(getDoc).not.toHaveBeenCalled();
-    });
-
-    it("returns default when localStorage is empty and Firestore document does not exist", async () => {
-      const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
-
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const mockDocSnap = {
-        exists: () => false,
-      } as unknown as DocumentSnapshot;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockResolvedValue(mockDocSnap);
-
-      const preference = await loadAutoAdvanceLiveReplayPreference("user123");
-
-      expect(preference).toBe(false);
-    });
-
-    it("handles Firestore errors gracefully and returns default", async () => {
-      const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
-
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockRejectedValue(new Error("Firestore error"));
-
-      const preference = await loadAutoAdvanceLiveReplayPreference("user123");
-
-      expect(preference).toBe(false);
+      await expect(loadAutoAdvanceLiveReplayPreference()).resolves.toBe(false);
     });
   });
 
   describe("loadPieceValuePresetPreference", () => {
-    it("returns and caches the Firestore preset when localStorage is empty", async () => {
-      const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
+    it("returns the stored preset when present", async () => {
+      const { storage } = createStorageMock({
+        "bh-piece-value-preset": "standard",
       });
+      Object.defineProperty(window, "localStorage", { value: storage, writable: true });
 
-      const mockDb = {} as Firestore;
-      const mockDocRef = {} as DocumentReference;
-      const mockDocSnap = {
-        exists: () => true,
-        data: () => ({ pieceValuePreset: "standard" }),
-      } as unknown as DocumentSnapshot;
-
-      vi.mocked(getFirestoreDb).mockReturnValue(mockDb);
-      vi.mocked(doc).mockReturnValue(mockDocRef);
-      vi.mocked(getDoc).mockResolvedValue(mockDocSnap);
-
-      await expect(loadPieceValuePresetPreference("user123")).resolves.toBe("standard");
-      expect(storage.getItem("bh-piece-value-preset")).toBe("standard");
+      await expect(loadPieceValuePresetPreference()).resolves.toBe("standard");
     });
 
     it("uses Bughouse values by default", async () => {
       const { storage } = createStorageMock();
-      Object.defineProperty(window, "localStorage", {
-        value: storage,
-        writable: true,
-      });
+      Object.defineProperty(window, "localStorage", { value: storage, writable: true });
 
-      await expect(loadPieceValuePresetPreference(null)).resolves.toBe("bughouse");
-      expect(getDoc).not.toHaveBeenCalled();
+      await expect(loadPieceValuePresetPreference()).resolves.toBe("bughouse");
     });
   });
 });

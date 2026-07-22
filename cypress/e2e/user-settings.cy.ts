@@ -2,7 +2,7 @@
  * E2E Tests for User Settings
  *
  * Tests that user preferences
- * are properly persisted to localStorage and Firestore (when authenticated).
+ * are properly persisted to localStorage.
  */
 
 describe("User Settings", () => {
@@ -96,50 +96,6 @@ describe("User Settings", () => {
       cy.reload();
       cy.get('button[aria-label="Settings"]', { timeout: 10000 }).click();
       cy.get('[data-testid="piece-value-preset"] input[value="standard"]').should("be.checked");
-    });
-  });
-
-  describe("Authenticated User (localStorage + Firestore)", () => {
-    beforeEach(() => {
-      // Clear emulators before each test
-      cy.clearEmulators();
-    });
-
-    it("saves annotation color to localStorage when authenticated", () => {
-      // Create and login a test user
-      cy.loginWithFirebase({
-        email: "settings-test@example.com",
-        displayName: "Settings Test User",
-      }).then(() => {
-        // Reload to pick up auth state
-        cy.visit("/");
-
-        // Wait for page to load
-        cy.get('button[aria-label="Settings"]', { timeout: 10000 }).should("be.visible");
-
-        // Open settings modal
-        cy.get('button[aria-label="Settings"]').click();
-        cy.get('[role="dialog"]').should("be.visible");
-
-        // Change the color
-        cy.get('[data-testid="annotation-color-picker"]')
-          .find('div[title]')
-          .first()
-          .click();
-
-        // Save
-        cy.contains("button", "Save").click();
-
-        // Wait for modal to close
-        cy.get('[role="dialog"]').should("not.exist");
-
-        // Verify localStorage was updated
-        cy.window().then((win) => {
-          const stored = win.localStorage.getItem(LOCAL_STORAGE_KEY);
-          expect(stored).to.not.equal(null);
-          expect(stored).to.be.a("string");
-        });
-      });
     });
   });
 

@@ -52,21 +52,8 @@ import {
   computeEffectiveFlip,
   getBottomPairKeyForGame,
 } from "../../utils/board/matchBoardOrientation";
-import { getSharedMatchBaselineBottomPairKey } from "../../utils/shared-games/sharedGameOrientation";
-import { useFullAuth, getFullAuthRequirementMessage } from "../../utils/platform/useFullAuth";
-import ShareGameModal from "../shared/ShareGameModal";
-import type { SharedContentType, SingleGameData } from "../../types/sharedGame";
-import { fromMatchGameData } from "../../types/sharedGame";
-import { getSharedGame, reconstructPartnerPairFromMetadata } from "../../utils/shared-games/sharedGamesService";
-import { getShareEligibility } from "../../utils/shared-games/shareEligibility";
-import { useSharedGameHashes } from "../../utils/shared-games/sharedGameHashesStore";
 import { ViewerOrientationStore, ViewerOrientationStoreProvider } from "../../stores/viewerOrientationStore";
 import ViewerLandscapeHint from "./ViewerLandscapeHint";
-import {
-  computeShareContentHash,
-  createShareHashInputFromMatchGames,
-  createShareHashInputFromSingleGame,
-} from "../../utils/shared-games/sharedGameHash";
 import { getAutoAdvanceLiveReplayFromLocalStorage } from "../../utils/preferences/userPreferencesService";
 import { scheduleLiveReplayAutoAdvance } from "../../utils/replay/liveReplayAutoAdvance";
 import {
@@ -175,7 +162,6 @@ export default function GameViewerPage() {
     } | null
   >(null);
   const [viewerSessionId, setViewerSessionId] = useState(0);
-  const [sharedGameDescription, setSharedGameDescription] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const loadedGameId = gameData?.original?.game?.id?.toString();
   const lastAutoLoadedIdRef = useRef<string | null>(null);
@@ -214,7 +200,6 @@ export default function GameViewerPage() {
   const [matchCurrentIndex, setMatchCurrentIndex] = useState(0);
   const [matchDiscoveryStatus, setMatchDiscoveryStatus] = useState<MatchDiscoveryStatus>("idle");
   const discoveryCancellationRef = useRef<DiscoveryCancellation | null>(null);
-  const [hasUserInitiatedMatchDiscovery, setHasUserInitiatedMatchDiscovery] = useState(false);
   const [autoStartLiveReplayGameId, setAutoStartLiveReplayGameId] = useState<string | null>(null);
 
   // Match discovery modal state
@@ -243,20 +228,6 @@ export default function GameViewerPage() {
    * We reset this on any fresh game load (not on in-match navigation).
    */
   const [standaloneBoardsFlipped, setStandaloneBoardsFlipped] = useState(false);
-
-  // Full auth state for sharing functionality
-  const { status: fullAuthStatus, user, username, isFullyAuthenticated } = useFullAuth();
-  const { hashes: sharedGameHashes, status: sharedGameHashesStatus } = useSharedGameHashes();
-
-  // Share modal state
-  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
-
-  /**
-   * Pristine game data for sharing.
-   * This is set when a game is first loaded and never modified,
-   * ensuring we share the original mainline regardless of user analysis.
-   */
-  const [pristineGameData, setPristineGameData] = useState<SingleGameData | null>(null);
 
   /**
    * The canonical public base URL we want users to share (rather than a localhost/dev URL).
@@ -390,20 +361,16 @@ export default function GameViewerPage() {
     setPendingLoadRequest(null);
 
     setGameData(null);
-    setPristineGameData(null);
-    setSharedGameDescription(null);
     setAutoStartLiveReplayGameId(null);
     setMatchGames([]);
     setMatchCurrentIndex(0);
     setMatchDiscoveryStatus("idle");
-    setHasUserInitiatedMatchDiscovery(false);
     setSelectedPairForDisplay(null);
     setBaselineBottomPairKey(null);
     setUserFlipPreference(false);
     setStandaloneBoardsFlipped(false);
     setAnalysisIsDirty(false);
     setIsDiscoveryModalOpen(false);
-    setIsShareModalOpen(false);
     setViewerSessionId((prev) => prev + 1);
 
     setGameId(getRandomSampleGameId());
@@ -486,16 +453,9 @@ export default function GameViewerPage() {
             setGameData(data);
             setAutoStartLiveReplayGameId(null);
             setGameId(clearInput ? "" : trimmedId);
-            setSharedGameDescription(null);
             if (clearInput) {
               setPrefetched({ status: "idle" });
             }
-            // Store pristine game data for potential sharing
-            setPristineGameData({
-              original: data.original,
-              partner: data.partner,
-              partnerId: data.partnerId,
-            });
             // Reset match state when loading a new game
             if (discoveryCancellationRef.current) {
               discoveryCancellationRef.current.cancel();
@@ -504,7 +464,6 @@ export default function GameViewerPage() {
             setMatchGames([]);
             setMatchCurrentIndex(0);
             setMatchDiscoveryStatus("idle");
-            setHasUserInitiatedMatchDiscovery(false);
             setSelectedPairForDisplay(null);
             setBaselineBottomPairKey(null);
             setUserFlipPreference(false);
@@ -673,7 +632,6 @@ export default function GameViewerPage() {
       setMatchGames([initialMatchGame]);
       setMatchCurrentIndex(0);
       setMatchDiscoveryStatus("discovering");
-      setHasUserInitiatedMatchDiscovery(true);
 
       // Start discovery (searches both backward and forward)
       discoverMatchGames(
@@ -963,158 +921,10 @@ export default function GameViewerPage() {
   }, [clearAutoAdvanceTimeout]);
 
   /**
-   * Determines the content type for sharing based on current state.
-   * - If match discovery is complete and we have multiple games: "match" or "partnerGames"
-   * - If a single game is loaded: "game"
-   */
-  const shareContentType: SharedContentType = (() => {
-    if (matchDiscoveryStatus === "complete" && matchGames.length > 1) {
-      return selectedPairForDisplay ? "partnerGames" : "match";
-    }
-    return "game";
-  })();
-
-  /**
-   * The game data that should be shared when the user opts to share a single game.
-   * In match/series mode, this uses the currently selected match game.
-   */
-  const shareSingleGameData: SingleGameData | null = (() => {
-    if (shareContentType === "game") {
-      return pristineGameData ?? null;
-    }
-
-    if (matchGames.length === 0) {
-      return null;
-    }
-
-    const currentMatchGame = matchGames[matchCurrentIndex] ?? matchGames[0]!;
-    return {
-      original: currentMatchGame.original,
-      partner: currentMatchGame.partner,
-      partnerId: currentMatchGame.partnerGameId,
-    };
-  })();
-
-  /**
-   * Whether match discovery is currently in progress.
-   */
-  const isDiscovering = matchDiscoveryStatus === "discovering";
-
-  /**
-   * Determines whether sharing is allowed and why it might be blocked.
-   */
-  const shareEligibility = getShareEligibility({
-    isFullyAuthenticated,
-    loadedGameId: loadedGameId ?? null,
-    isDiscovering,
-    sharedId,
-    matchDiscoveryStatus,
-    matchGamesCount: matchGames.length,
-    hasUserInitiatedMatchDiscovery,
-    authMessage: getFullAuthRequirementMessage(fullAuthStatus),
-  });
-
-  /**
-   * Whether the share button should be enabled.
-   */
-  const hashesLoaded = sharedGameHashesStatus === "loaded";
-  const shareSingleGameHash = (() => {
-    if (!user?.uid || !shareSingleGameData) return null;
-    try {
-      return computeShareContentHash(
-        createShareHashInputFromSingleGame({
-          userId: user.uid,
-          gameData: shareSingleGameData,
-        }),
-      );
-    } catch {
-      return null;
-    }
-  })();
-  const shareMatchHash = (() => {
-    if (!user?.uid || shareContentType === "game" || matchGames.length === 0) return null;
-    try {
-      return computeShareContentHash(
-        createShareHashInputFromMatchGames({
-          userId: user.uid,
-          contentType: shareContentType,
-          matchGames,
-          selectedPair: selectedPairForDisplay,
-        }),
-      );
-    } catch {
-      return null;
-    }
-  })();
-
-  const hasMatchShareScope = shareContentType !== "game" && matchGames.length > 0;
-  const hasSingleShareScope = Boolean(shareSingleGameData);
-  const isSingleDuplicate = hashesLoaded && shareSingleGameHash
-    ? sharedGameHashes.has(shareSingleGameHash)
-    : false;
-  const isMatchDuplicate = hashesLoaded && shareMatchHash
-    ? sharedGameHashes.has(shareMatchHash)
-    : false;
-  const canShareBasedOnHashes = hashesLoaded
-    ? (hasMatchShareScope && !isMatchDuplicate) || (hasSingleShareScope && !isSingleDuplicate)
-    : hasMatchShareScope || hasSingleShareScope;
-
-  const canShare = shareEligibility.canShare && canShareBasedOnHashes;
-
-  /**
-   * Message explaining why sharing is disabled.
-   */
-  const shareDisabledReason = (() => {
-    if (!shareEligibility.canShare) {
-      return shareEligibility.disabledReason;
-    }
-
-    if (!hashesLoaded || canShareBasedOnHashes) {
-      return undefined;
-    }
-
-    if (hasMatchShareScope && hasSingleShareScope && isMatchDuplicate && isSingleDuplicate) {
-      return "You have already shared this match and this game.";
-    }
-
-    if (hasMatchShareScope && isMatchDuplicate) {
-      return shareContentType === "partnerGames"
-        ? "You have already shared this partner series."
-        : "You have already shared this match.";
-    }
-
-    if (hasSingleShareScope && isSingleDuplicate) {
-      return "You have already shared this game.";
-    }
-
-    return undefined;
-  })();
-
-  /**
    * Whether the current game should auto-start live replay after auto-advance.
    */
   const shouldAutoStartLiveReplay =
     autoStartLiveReplayGameId !== null && loadedGameId === autoStartLiveReplayGameId;
-
-  /**
-   * Opens the share modal.
-   */
-  const handleShareClick = useCallback(() => {
-    if (!canShare) return;
-    logAnalyticsEvent(analytics, "share_button_clicked", {
-      has_match: matchGames.length > 0 ? "true" : "false",
-      match_game_count: matchGames.length > 0 ? matchGames.length : 0,
-    });
-    setIsShareModalOpen(true);
-  }, [canShare, analytics, matchGames.length]);
-
-  /**
-   * Handles successful share.
-   */
-  const handleShareSuccess = useCallback((sharedId: string) => {
-    console.debug("[GameViewerPage] Game shared successfully:", sharedId);
-    // Modal will close itself
-  }, []);
 
   const schedulePrefetchForRawInput = useCallback((rawInput: string) => {
       if (typeof window === "undefined") return;
@@ -1254,139 +1064,6 @@ export default function GameViewerPage() {
       window.clearTimeout(timeoutId);
     };
   }, [autoLoadGameId, initialGlobalPly, loadGame]);
-
-  /**
-   * Effect to load shared games from Firestore.
-   * When a sharedId is present in the URL, we load the game data from our database
-   * instead of fetching from Chess.com.
-   */
-  useEffect(() => {
-    if (!sharedId) {
-      return;
-    }
-
-    if (lastAutoLoadedSharedIdRef.current === sharedId) {
-      return;
-    }
-
-    lastAutoLoadedSharedIdRef.current = sharedId;
-
-    startTransition(() => {
-      const loadSharedGamePromise = (async () => {
-        const sharedGame = await getSharedGame(sharedId);
-        if (!sharedGame) {
-          throw new Error("Shared game not found");
-        }
-
-        return sharedGame;
-      })();
-
-      toast.promise(loadSharedGamePromise, {
-        loading: "Loading shared game...",
-        success: "Shared game loaded!",
-        error: (err: unknown) => {
-          const message = err instanceof Error ? err.message : "Failed to load shared game";
-          return message;
-        },
-      });
-
-      loadSharedGamePromise
-        .then((sharedGame) => {
-          setViewerSessionId((prev) => prev + 1);
-          const { gameData: storedData, type } = sharedGame;
-          setSharedGameDescription(sharedGame.description?.trim() || null);
-
-          // Log analytics for shared game loaded
-          logAnalyticsEvent(analytics, "shared_game_loaded", {
-            shared_id: sharedId,
-            content_type: storedData.type,
-            game_count: storedData.type === "game" ? 1 : storedData.games.length,
-          });
-
-          let sharedBaselineBottomPairKey: PairKey | null = null;
-
-          if (storedData.type === "game") {
-            // Single game
-            const { game } = storedData;
-            setGameData({
-              original: game.original,
-              partner: game.partner,
-              partnerId: game.partnerId,
-            });
-            setAutoStartLiveReplayGameId(null);
-            setPristineGameData(game);
-            setMatchGames([]);
-            setMatchCurrentIndex(0);
-            setMatchDiscoveryStatus("idle");
-            setHasUserInitiatedMatchDiscovery(false);
-          } else {
-            // Match or partner games
-            const matchGameData = fromMatchGameData(storedData.games);
-            if (matchGameData.length === 0) {
-              throw new Error("No games in shared match");
-            }
-
-            // Set the first game as the current game
-            const firstGame = matchGameData[0]!;
-            setGameData({
-              original: firstGame.original,
-              partner: firstGame.partner,
-              partnerId: firstGame.partnerGameId,
-            });
-            setAutoStartLiveReplayGameId(null);
-            setPristineGameData({
-              original: firstGame.original,
-              partner: firstGame.partner,
-              partnerId: firstGame.partnerGameId,
-            });
-
-            // Set up match state
-            setMatchGames(matchGameData);
-            setMatchCurrentIndex(0);
-            setMatchDiscoveryStatus("complete");
-            setHasUserInitiatedMatchDiscovery(false);
-
-            // For partner games, reconstruct the selected pair from metadata
-            // The metadata.team1 contains the partner pair, and team2 is "Random Opponents"
-            let selectedPair: PartnerPair | null = null;
-            if (type === "partnerGames") {
-              selectedPair = reconstructPartnerPairFromMetadata(sharedGame.metadata);
-
-              // Fallback: try to extract from first game if metadata doesn't match expected format
-              if (!selectedPair) {
-                selectedPair = extractPartnerPairs(firstGame.original, firstGame.partner)?.[0] ?? null;
-              }
-            }
-
-            setSelectedPairForDisplay(selectedPair);
-            sharedBaselineBottomPairKey = getSharedMatchBaselineBottomPairKey({
-              contentType: type,
-              matchGames: matchGameData,
-              selectedPair,
-            });
-          }
-
-          // Reset other state
-          setGameId("");
-          setPrefetched({ status: "idle" });
-          if (discoveryCancellationRef.current) {
-            discoveryCancellationRef.current.cancel();
-            discoveryCancellationRef.current = null;
-          }
-          setBaselineBottomPairKey(sharedBaselineBottomPairKey);
-          setUserFlipPreference(false);
-          setStandaloneBoardsFlipped(false);
-        })
-        .catch((err: unknown) => {
-          console.error("[GameViewerPage] Failed to load shared game:", err);
-          setSharedGameDescription(null);
-          logAnalyticsEvent(analytics, "shared_game_load_error", {
-            shared_id: sharedId ?? "unknown",
-            error: err instanceof Error ? err.message : "unknown",
-          });
-        });
-    });
-  }, [sharedId, startTransition, analytics]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1581,33 +1258,14 @@ export default function GameViewerPage() {
               onAnalysisDirtyChange={setAnalysisIsDirty}
               gamesLoadedLabel={gamesLoadedLabel}
               showGamesLoadedInline={!isDesktopLayout}
-              onShareClick={handleShareClick}
               onShareGameFromPly={(ply) => void handleCopyShareLinkFromPly(ply)}
-              canShare={canShare}
               canShareFromMove={Boolean(loadedGameId)}
-              shareDisabledReason={shareDisabledReason}
-              sharedGameDescription={sharedGameDescription}
               onLiveReplayCompleted={handleLiveReplayCompleted}
               autoStartLiveReplay={shouldAutoStartLiveReplay}
             />
           </ViewerOrientationStoreProvider>
         </div>
       </main>
-
-      {/* Share Game Modal */}
-      {isFullyAuthenticated && user && username && (
-        <ShareGameModal
-          open={isShareModalOpen}
-          userId={user.uid}
-          username={username}
-          singleGameData={shareSingleGameData}
-          matchGames={shareContentType !== "game" ? matchGames : undefined}
-          contentType={shareContentType}
-          selectedPair={shareContentType === "partnerGames" ? selectedPairForDisplay : null}
-          onClose={() => setIsShareModalOpen(false)}
-          onSuccess={handleShareSuccess}
-        />
-      )}
     </div>
   );
 }

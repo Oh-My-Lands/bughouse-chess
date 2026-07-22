@@ -1,20 +1,13 @@
 "use client";
 
 import { Toaster } from "react-hot-toast";
-import React, { useEffect } from "react";
+import React from "react";
 import { Tooltip } from "react-tooltip";
 import { APP_TOOLTIP_ID } from "./utils/platform/tooltips";
-import {
-  getFirebaseAnalytics,
-  initializeFirebaseAppCheck,
-} from "./utils/platform/firebaseClient";
-import { AuthProvider } from "./auth/AuthProvider";
 import { useUserPreferences } from "./utils/preferences/useUserPreferences";
-import { SharedGameHashesProvider } from "./utils/shared-games/sharedGameHashesStore";
 
 /**
- * Component that loads user preferences after auth is initialized.
- * Must be rendered inside AuthProvider to access auth context.
+ * Loads user preferences (from localStorage) on mount.
  */
 function UserPreferencesLoader() {
   useUserPreferences();
@@ -22,41 +15,14 @@ function UserPreferencesLoader() {
 }
 
 /**
- * Top-level client providers. Currently hosts the toast system so all pages
- * can trigger notifications.
- *
- * Also initializes Firebase Analytics on the client side.
+ * Top-level client providers. Hosts the toast system and shared tooltip so all
+ * pages can trigger notifications and tooltips.
  */
 export default function Providers({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  // Initialize Firebase Analytics on mount
-  useEffect(() => {
-    try {
-      initializeFirebaseAppCheck();
-    } catch (error) {
-      if (process.env.NODE_ENV === "development") {
-        console.warn("Firebase App Check initialization failed:", error);
-      }
-    }
-
-    // Initialize Analytics asynchronously (non-blocking)
-    void (async () => {
-      try {
-        await getFirebaseAnalytics();
-        // Analytics is now initialized and ready to use throughout the app
-      } catch (error) {
-        // Silently fail if Analytics is not configured or not supported
-        // This prevents errors from breaking the app if Firebase is not set up
-        if (process.env.NODE_ENV === "development") {
-          console.warn("Firebase Analytics initialization failed:", error);
-        }
-      }
-    })();
-  }, []);
-
   return (
     <>
       <Toaster
@@ -102,12 +68,8 @@ export default function Providers({
           zIndex: 60,
         }}
       />
-      <AuthProvider>
-        <UserPreferencesLoader />
-        <SharedGameHashesProvider>
-          {children}
-        </SharedGameHashesProvider>
-      </AuthProvider>
+      <UserPreferencesLoader />
+      {children}
     </>
   );
 }

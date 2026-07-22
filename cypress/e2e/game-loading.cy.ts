@@ -40,8 +40,8 @@ describe("Game Loading", () => {
     it("has sidebar with navigation links", () => {
       cy.visit("/");
 
-      cy.get('a[aria-label="Open profile"]', { timeout: 10000 }).should("exist");
-      cy.get('a[aria-label="Browse shared games"]').should("exist");
+      cy.get('a[aria-label="View source code on GitHub"]', { timeout: 10000 }).should("exist");
+      cy.get('a[aria-label="Play bughouse on Chess.com"]').should("exist");
     });
 
     it("has settings button in sidebar", () => {
@@ -275,24 +275,6 @@ describe("Game Loading", () => {
         );
         expect(callCountAfterReset).to.equal(callCountBeforeReset);
       });
-    });
-  });
-
-  describe("Shared Games Page", () => {
-    it("loads shared games page", () => {
-      cy.visit("/shared-games");
-
-      // Should show the shared games page
-      cy.contains(/shared|games/i, { timeout: 10000 }).should("exist");
-    });
-  });
-
-  describe("Profile Page", () => {
-    it("loads profile page", () => {
-      cy.visit("/profile");
-
-      // Should show profile content
-      cy.get("h1", { timeout: 10000 }).should("exist");
     });
   });
 });

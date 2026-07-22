@@ -6,11 +6,9 @@ import { Chess, type Square } from "chess.js";
 import {
   ChevronLeft,
   Fullscreen,
-  MessageSquareText,
   Pause,
   Play,
   RefreshCcw,
-  Save,
   SkipBack,
   SkipForward,
   StepBack,
@@ -60,7 +58,6 @@ import {
 } from "../../utils/analysis/liveReplay";
 import { useCompactLandscape } from "../../utils/platform/useCompactLandscape";
 import { useFirebaseAnalytics, logAnalyticsEvent } from "../../utils/platform/useFirebaseAnalytics";
-import { getSharedGameDescriptionTooltip } from "../../utils/shared-games/sharedGameDescription";
 import { useViewerOrientationStore } from "../../stores/viewerOrientationStore";
 import {
   getBoardOrder,
@@ -113,33 +110,15 @@ interface BughouseAnalysisProps {
    */
   onAnalysisDirtyChange?: (dirty: boolean) => void;
   /**
-   * Called when the user clicks the share button.
-   * The parent component handles the sharing logic and modal.
-   */
-  onShareClick?: () => void;
-  /**
    * Called when the user chooses "Share game from this move" in the move list context menu.
-   * Receives a 0-based global ply on the loaded mainline.
+   * Receives a 0-based global ply on the loaded mainline. Copies a chess.com share
+   * link to the clipboard.
    */
   onShareGameFromPly?: (ply: number) => void;
-  /**
-   * Whether the share button should be enabled.
-   * Typically true when a game is loaded AND user is fully authenticated.
-   */
-  canShare?: boolean;
   /**
    * Whether "Share game from this move" should be enabled in the move list context menu.
    */
   canShareFromMove?: boolean;
-  /**
-   * Tooltip message explaining why sharing is disabled (when canShare is false).
-   */
-  shareDisabledReason?: string;
-  /**
-   * Optional description from a shared game/match/series.
-   * Only rendered when the viewer is opened via a shared link.
-   */
-  sharedGameDescription?: string | null;
   /**
    * Called once when a live replay finishes naturally (playhead reaches the end).
    */
@@ -182,12 +161,8 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
   gamesLoadedLabel,
   showGamesLoadedInline,
   onAnalysisDirtyChange,
-  onShareClick,
   onShareGameFromPly,
-  canShare,
   canShareFromMove,
-  shareDisabledReason,
-  sharedGameDescription,
   onLiveReplayCompleted,
   autoStartLiveReplay,
 }) => {
@@ -1324,8 +1299,6 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
     ? "Pause live replay"
     : liveReplayPlayDisabledReason ?? "Play live replay";
 
-  const sharedGameDescriptionTooltip = getSharedGameDescriptionTooltip(sharedGameDescription);
-
   const handleLiveReplayPause = useCallback(() => {
     logAnalyticsEvent(analytics, "live_replay_paused", {
       elapsed_deciseconds: liveReplayElapsedDeciseconds,
@@ -2321,47 +2294,14 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
                     <SkipForward aria-hidden className={layout.controlIconSizeClass} />
                   </button>
                 </TooltipAnchor>
-                {sharedGameDescriptionTooltip ? (
-                  <TooltipAnchor
-                    content={sharedGameDescriptionTooltip}
-                    className="absolute left-full ml-3 top-1/2 -translate-y-1/2 inline-flex"
-                  >
-                    <span
-                      className={[
-                        "inline-flex items-center justify-center text-gray-400 hover:text-gray-200",
-                        "cursor-help",
-                        isCompactLandscape ? "h-6 w-6" : "h-7 w-7",
-                      ].join(" ")}
-                      aria-label="View shared game description"
-                      role="img"
-                      tabIndex={0}
-                    >
-                      <MessageSquareText
-                        className={isCompactLandscape ? "h-3.5 w-3.5" : "h-4 w-4"}
-                        aria-hidden="true"
-                      />
-                    </span>
-                  </TooltipAnchor>
-                ) : null}
               </div>
             </div>
 
             {/* Spacer to mirror description column width */}
             <div aria-hidden="true" />
 
-            {/* Right side: share + flip boards */}
+            {/* Right side: flip boards */}
             <div className="shrink-0 inline-flex items-center gap-2 pl-2">
-              <TooltipAnchor content={shareDisabledReason ?? "Share game"}>
-                <button
-                  onClick={onShareClick}
-                  disabled={!canShare}
-                  className={controlButtonBaseClass}
-                  aria-label="Share game"
-                  type="button"
-                >
-                  <Save aria-hidden className={layout.controlIconSizeClass} />
-                </button>
-              </TooltipAnchor>
               <TooltipAnchor content="Flip boards (f)">
                 <button
                   onClick={toggleBoardsFlipped}

@@ -1,7 +1,5 @@
 "use client";
 
-import { doc, getDoc, setDoc } from "firebase/firestore";
-import { getFirestoreDb } from "@/app/utils/platform/firebaseClient";
 import {
   DEFAULT_PIECE_VALUE_PRESET,
   isPieceValuePreset,
@@ -37,13 +35,6 @@ const PIECE_VALUE_PRESET_KEY = "bh-piece-value-preset";
  * Same-tab notification used by the game viewer to react to saved preference changes.
  */
 const PIECE_VALUE_PRESET_CHANGE_EVENT = "bh-piece-value-preset-change";
-
-/**
- * Firestore collection path for user preferences.
- * Structure: users/{userId}/userPreferences/{preferencesDocId}
- */
-const USER_PREFERENCES_COLLECTION = "userPreferences";
-const USER_PREFERENCES_DOC_ID = "settings";
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -233,140 +224,30 @@ export function getPieceValuePresetSnapshot(): PieceValuePreset {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Firestore Operations                                                       */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Loads user preferences from Firestore.
- * Returns null if the document doesn't exist or if there's an error.
- */
-export async function loadUserPreferencesFromFirestore(
-  userId: string,
-): Promise<UserPreferences | null> {
-  try {
-    const db = getFirestoreDb();
-    const docRef = doc(db, "users", userId, USER_PREFERENCES_COLLECTION, USER_PREFERENCES_DOC_ID);
-    const docSnap = await getDoc(docRef);
-
-    if (!docSnap.exists()) {
-      return null;
-    }
-
-    const data = docSnap.data();
-    return {
-      boardAnnotationColor: data.boardAnnotationColor ?? DEFAULT_BOARD_ANNOTATION_COLOR,
-      autoAdvanceLiveReplay: data.autoAdvanceLiveReplay ?? false,
-      pieceValuePreset: isPieceValuePreset(data.pieceValuePreset)
-        ? data.pieceValuePreset
-        : DEFAULT_PIECE_VALUE_PRESET,
-    };
-  } catch (err) {
-    console.error("[userPreferencesService] Failed to load preferences from Firestore:", err);
-    return null;
-  }
-}
-
-/**
- * Saves user preferences to Firestore.
- * This is called when the user clicks "Save" in the settings modal.
- */
-export async function saveUserPreferencesToFirestore(
-  userId: string,
-  preferences: UserPreferences,
-): Promise<void> {
-  try {
-    const db = getFirestoreDb();
-    const docRef = doc(db, "users", userId, USER_PREFERENCES_COLLECTION, USER_PREFERENCES_DOC_ID);
-    await setDoc(docRef, preferences, { merge: true });
-  } catch (err) {
-    console.error("[userPreferencesService] Failed to save preferences to Firestore:", err);
-    throw err;
-  }
-}
-
-/* -------------------------------------------------------------------------- */
 /* Unified Preference Loading                                                 */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Loads the board annotation color preference using the following priority:
- * 1. localStorage (if present, for immediate loading)
- * 2. Firestore (if authenticated and localStorage is empty)
- * 3. Default value
- *
- * This function should be called on app initialization.
+ * Loads the board annotation color from localStorage, falling back to the
+ * default. Async so callers that were written against the old localStorage →
+ * Firestore path keep working unchanged.
  */
-export async function loadBoardAnnotationColor(
-  userId: string | null,
-): Promise<string> {
-  // First, check localStorage for immediate loading
-  const localColor = getBoardAnnotationColorFromLocalStorage();
-  if (localColor !== DEFAULT_BOARD_ANNOTATION_COLOR) {
-    return localColor;
-  }
-
-  // If authenticated and no localStorage value, check Firestore
-  if (userId) {
-    const firestorePrefs = await loadUserPreferencesFromFirestore(userId);
-    if (firestorePrefs?.boardAnnotationColor) {
-      // Sync to localStorage for future loads
-      saveBoardAnnotationColorToLocalStorage(firestorePrefs.boardAnnotationColor);
-      return firestorePrefs.boardAnnotationColor;
-    }
-  }
-
-  return DEFAULT_BOARD_ANNOTATION_COLOR;
+export async function loadBoardAnnotationColor(): Promise<string> {
+  return getBoardAnnotationColorFromLocalStorage();
 }
 
 /**
- * Loads the auto-advance live replay preference using the following priority:
- * 1. localStorage (if present)
- * 2. Firestore (if authenticated and localStorage is empty)
- * 3. Default value (false)
+ * Loads the auto-advance live replay preference from localStorage, defaulting
+ * to `false` when nothing is stored.
  */
-export async function loadAutoAdvanceLiveReplayPreference(
-  userId: string | null,
-): Promise<boolean> {
-  // First, check localStorage for an explicit preference
-  const localPreference = getAutoAdvanceLiveReplayFromLocalStorage();
-  if (localPreference !== null) {
-    return localPreference;
-  }
-
-  // If authenticated and no localStorage value, check Firestore
-  if (userId) {
-    const firestorePrefs = await loadUserPreferencesFromFirestore(userId);
-    if (typeof firestorePrefs?.autoAdvanceLiveReplay === "boolean") {
-      // Sync to localStorage for future loads
-      saveAutoAdvanceLiveReplayToLocalStorage(firestorePrefs.autoAdvanceLiveReplay);
-      return firestorePrefs.autoAdvanceLiveReplay;
-    }
-  }
-
-  return false;
+export async function loadAutoAdvanceLiveReplayPreference(): Promise<boolean> {
+  return getAutoAdvanceLiveReplayFromLocalStorage() ?? false;
 }
 
 /**
- * Loads the piece value preset using the following priority:
- * 1. localStorage (if present)
- * 2. Firestore (if authenticated and localStorage is empty)
- * 3. Default bughouse values
+ * Loads the piece value preset from localStorage, defaulting to the bughouse
+ * preset when nothing is stored.
  */
-export async function loadPieceValuePresetPreference(
-  userId: string | null,
-): Promise<PieceValuePreset> {
-  const localPreference = getPieceValuePresetFromLocalStorage();
-  if (localPreference) {
-    return localPreference;
-  }
-
-  if (userId) {
-    const firestorePrefs = await loadUserPreferencesFromFirestore(userId);
-    if (firestorePrefs?.pieceValuePreset) {
-      savePieceValuePresetToLocalStorage(firestorePrefs.pieceValuePreset);
-      return firestorePrefs.pieceValuePreset;
-    }
-  }
-
-  return DEFAULT_PIECE_VALUE_PRESET;
+export async function loadPieceValuePresetPreference(): Promise<PieceValuePreset> {
+  return getPieceValuePresetFromLocalStorage() ?? DEFAULT_PIECE_VALUE_PRESET;
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect } from "react";
-import { useAuth } from "@/app/auth/useAuth";
 import {
   loadBoardAnnotationColor,
   DEFAULT_BOARD_ANNOTATION_COLOR,
@@ -13,31 +12,19 @@ import {
  * Hook that loads user preferences on app initialization and updates the CSS variable.
  * This should be called once at the app root level.
  *
- * Priority:
- * 1. localStorage (if present, for immediate loading)
- * 2. Firestore (if authenticated and localStorage is empty)
- * 3. Default value
+ * Preferences are stored in localStorage only.
  */
 export function useUserPreferences() {
-  const { user, status } = useAuth();
-
   useEffect(() => {
-    // Only load preferences once auth status is determined
-    if (status === "loading") {
-      return;
-    }
-
-    const userId = status === "signed_in" && user?.uid ? user.uid : null;
-
     /**
      * Loads the board annotation color and updates the CSS variable.
      */
     async function loadPreferences() {
       try {
         const [color] = await Promise.all([
-          loadBoardAnnotationColor(userId),
-          loadAutoAdvanceLiveReplayPreference(userId),
-          loadPieceValuePresetPreference(userId),
+          loadBoardAnnotationColor(),
+          loadAutoAdvanceLiveReplayPreference(),
+          loadPieceValuePresetPreference(),
         ]);
         const root = document.documentElement;
         root.style.setProperty("--bh-board-annotation-color", color);
@@ -50,5 +37,5 @@ export function useUserPreferences() {
     }
 
     void loadPreferences();
-  }, [user, status]);
+  }, []);
 }

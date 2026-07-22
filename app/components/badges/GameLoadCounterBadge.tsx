@@ -1,106 +1,28 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import {
-  hasRecordedGameLoadThisSession,
-  markRecordedGameLoadThisSession,
-} from "../../utils/platform/metrics/gameLoadSession";
-
-type MetricsResponse = {
-  gamesLoaded: number;
-};
-
 /**
- * Bottom-right UI badge showing the global number of loaded games.
+ * Global "games analysed" counter.
  *
- * Behavior:
- * - When `loadedGameId` changes, we either increment the global counter (once per
- *   session per game id) or just fetch the latest value.
- * - This component intentionally does *not* talk to Firestore directly; it only
- *   uses our server route (`/api/metrics/game-load`).
+ * The counter was backed by a Firestore document behind `/api/metrics/game-load`,
+ * which was removed with the rest of Firebase. There is no server datastore to
+ * count against anymore, so the hook returns an empty label and the badges
+ * render nothing. The consuming components already guard on a truthy label, so
+ * the feature simply disappears from the UI without further changes.
+ *
+ * The hook signature and the badge components are kept so a future counter (e.g.
+ * backed by a self-hosted store) can be dropped in here alone.
  */
-export function useGameLoadCounterLabel(loadedGameId?: string | null): {
+export function useGameLoadCounterLabel(_loadedGameId?: string | null): {
   gamesLoaded: number | null;
   isLoading: boolean;
   hasError: boolean;
   label: string;
 } {
-  const [gamesLoaded, setGamesLoaded] = useState<number | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [hasError, setHasError] = useState(false);
-
-  const GAMES_LOADED_PREFIX: string = "Games Analysed: ";
-  const label = useMemo(() => {
-    if (isLoading) return `${GAMES_LOADED_PREFIX}…`;
-    if (hasError) return `${GAMES_LOADED_PREFIX}—`;
-    if (gamesLoaded == null) return `${GAMES_LOADED_PREFIX}—`;
-    return `${GAMES_LOADED_PREFIX}${gamesLoaded.toLocaleString()}`;
-  }, [gamesLoaded, hasError, isLoading]);
-
-  useEffect(() => {
-    const gameId = loadedGameId?.trim();
-    if (!gameId) {
-      // Still fetch the current value, so the badge isn't empty on first paint.
-      // This is also useful if the page loads without a game and the user is
-      // about to type one in.
-      void (async () => {
-        setIsLoading(true);
-        setHasError(false);
-        try {
-          const res = await fetch("/api/metrics/game-load", {
-            method: "GET",
-            cache: "no-store",
-          });
-          const json = (await res.json()) as MetricsResponse;
-          if (typeof json.gamesLoaded === "number") setGamesLoaded(json.gamesLoaded);
-        } catch {
-          setHasError(true);
-        } finally {
-          setIsLoading(false);
-        }
-      })();
-      return;
-    }
-
-    if (typeof window === "undefined") return;
-
-    const alreadyRecorded = hasRecordedGameLoadThisSession(
-      window.sessionStorage,
-      gameId,
-    );
-
-    void (async () => {
-      setIsLoading(true);
-      setHasError(false);
-
-      try {
-        const res = await fetch("/api/metrics/game-load", {
-          method: alreadyRecorded ? "GET" : "POST",
-          headers: alreadyRecorded ? undefined : { "content-type": "application/json" },
-          body: alreadyRecorded ? undefined : JSON.stringify({ gameId }),
-          cache: "no-store",
-        });
-
-        const json = (await res.json()) as MetricsResponse;
-        if (typeof json.gamesLoaded === "number") {
-          setGamesLoaded(json.gamesLoaded);
-        }
-
-        if (!alreadyRecorded) {
-          markRecordedGameLoadThisSession(window.sessionStorage, gameId);
-        }
-      } catch {
-        setHasError(true);
-      } finally {
-        setIsLoading(false);
-      }
-    })();
-  }, [loadedGameId]);
-
-  return { gamesLoaded, isLoading, hasError, label };
+  return { gamesLoaded: null, isLoading: false, hasError: false, label: "" };
 }
 
 export function GameLoadCounterFloating({ label }: { label: string }) {
+  if (!label) return null;
   return (
     <div className="fixed bottom-3 right-3 z-50 select-none">
       <div className="rounded-md bg-gray-900/85 px-3 py-2 text-xs text-gray-200 shadow-lg backdrop-blur">
@@ -117,6 +39,7 @@ export function GameLoadCounterInline({
   label: string;
   className?: string;
 }) {
+  if (!label) return null;
   return (
     <span className={["font-mono tabular-nums", className ?? ""].join(" ").trim()}>
       {label}
