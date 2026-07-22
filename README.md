@@ -169,6 +169,42 @@ chess.com).
 - **Match discovery**: `app/utils/matchDiscovery.ts`,
   `app/components/MatchNavigation.tsx`
 
+### Engine analysis (optional, for evaluated candidate moves)
+
+Relay can annotate a position with candidate moves ranked by the Hivemind
+bughouse engine, running on a RunPod serverless GPU endpoint.
+
+The feature is **opt-in and off by default**: without
+`NEXT_PUBLIC_ENGINE_ENDPOINT` the engine panel is not rendered at all. A search
+spends GPU time, so it must never begin merely because a page loaded.
+
+Setup:
+
+1. Deploy the Hivemind worker as a RunPod serverless endpoint and note its id
+2. Create a RunPod API key
+3. Set these in `.env.local` (see `.env.example` for the full annotated list):
+
+```bash
+# The browser calls the app's own route; the key stays server-side
+NEXT_PUBLIC_ENGINE_ENDPOINT="/api/engine"
+
+RUNPOD_ENDPOINT_ID="your-endpoint-id"
+RUNPOD_API_KEY="your-runpod-api-key"
+```
+
+4. Verify with `npm run check:engine`
+
+`RUNPOD_API_KEY` deliberately has no `NEXT_PUBLIC_` prefix: it spends money, so
+it must never reach the browser. `app/api/engine/run/route.ts` is the
+server-side proxy that holds it, and it mirrors RunPod's `{ output: ... }`
+envelope so the client speaks one shape against both it and a local dev engine.
+
+Two configuration failures both surface as a generic failed search, which is
+why `npm run check:engine` exists to name them: a **404** means the endpoint id
+no longer exists (endpoints are recreated with new ids, never renamed), and a
+**401** means the key was rejected. Note that `NEXT_PUBLIC_ENGINE_ENDPOINT` is
+baked into the bundle at build time, so changing it requires clearing `.next`.
+
 ### Firebase (optional, for metrics + analytics + user features)
 
 Relay supports:
@@ -294,6 +330,7 @@ Open `http://localhost:3000`.
 - `npm run test:unit`: Vitest unit tests once
 - `npm run test:component`: Cypress component tests headlessly
 - `npm run fixtures:record`: record chess.com fixtures for tests
+- `npm run check:engine`: check the RunPod engine endpoint is configured and answering
 
 ### Testing strategy
 
