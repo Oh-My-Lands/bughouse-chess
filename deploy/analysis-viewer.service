@@ -1,0 +1,29 @@
+[Unit]
+Description=Bughouse analysis viewer (Next.js)
+After=network.target
+
+[Service]
+Type=exec
+User=analysis
+Group=analysis
+WorkingDirectory=/opt/analysis/app
+# The standalone build binds to PORT/HOSTNAME from the environment. Caddy
+# terminates HTTPS and proxies to this loopback port, so it never listens
+# publicly.
+Environment=NODE_ENV=production
+Environment=PORT=3100
+Environment=HOSTNAME=127.0.0.1
+# RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY live here, root-owned 600. They are
+# read server-side only by /api/engine/run; they are NOT NEXT_PUBLIC_ and are
+# never shipped to the browser.
+EnvironmentFile=/opt/analysis/env
+ExecStart=/usr/bin/node /opt/analysis/app/server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

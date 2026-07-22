@@ -1,0 +1,26 @@
+analysis.josephw.me {
+	encode zstd gzip
+	# Next.js emits content-hashed assets under /_next/static, so they can be
+	# cached forever -- a new build produces new filenames. Everything else
+	# (HTML, API) stays uncached so deploys take effect immediately.
+	@immutable path /_next/static/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	# Durable JSON access log, same stable shape the explorer vhost uses so
+	# GoAccess can parse it (see the explorer's deploy notes).
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>tls delete
+				resp_headers delete
+			}
+		}
+		output file /var/log/caddy/analysis-access.log {
+			roll_size 20MiB
+			roll_keep 12
+			roll_keep_for 8760h
+		}
+	}
+	reverse_proxy 127.0.0.1:3100
+}
