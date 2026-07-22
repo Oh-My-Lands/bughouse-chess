@@ -285,6 +285,68 @@ export async function saveUserPreferencesToFirestore(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Engine: show all plies                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether the engine panel shows a candidate's full principal variation rather
+ * than the truncated preview. Defaults off (the truncated preview).
+ */
+const SHOW_ALL_PLIES_KEY = "bh-engine-show-all-plies";
+const SHOW_ALL_PLIES_CHANGE_EVENT = "bh-engine-show-all-plies-change";
+
+/** Reads the "show all plies" preference from localStorage (default false). */
+export function getShowAllPliesFromLocalStorage(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  try {
+    return localStorage.getItem(SHOW_ALL_PLIES_KEY) === "true";
+  } catch (err) {
+    console.warn("[userPreferencesService] Failed to read from localStorage:", err);
+    return false;
+  }
+}
+
+/** Saves the preference and notifies same-tab subscribers. */
+export function setShowAllPlies(value: boolean): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    localStorage.setItem(SHOW_ALL_PLIES_KEY, String(value));
+    window.dispatchEvent(new Event(SHOW_ALL_PLIES_CHANGE_EVENT));
+  } catch (err) {
+    console.warn("[userPreferencesService] Failed to write to localStorage:", err);
+  }
+}
+
+/** Subscribe to changes made in this tab or another browser tab. */
+export function subscribeToShowAllPliesChanges(onChange: () => void): () => void {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === SHOW_ALL_PLIES_KEY) {
+      onChange();
+    }
+  };
+
+  window.addEventListener(SHOW_ALL_PLIES_CHANGE_EVENT, onChange);
+  window.addEventListener("storage", handleStorage);
+  return () => {
+    window.removeEventListener(SHOW_ALL_PLIES_CHANGE_EVENT, onChange);
+    window.removeEventListener("storage", handleStorage);
+  };
+}
+
+/** Snapshot used by React preference subscribers. */
+export function getShowAllPliesSnapshot(): boolean {
+  return getShowAllPliesFromLocalStorage();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Unified Preference Loading                                                 */
 /* -------------------------------------------------------------------------- */
 

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import { EngineLinesPanel } from "../../../app/components/engine/EngineLinesPanel";
@@ -254,6 +254,47 @@ describe("EngineLinesPanel", () => {
       expect(
         screen.getByRole("button", { name: "Run analysis" }),
       ).toBeInTheDocument();
+    });
+  });
+
+  describe("All plies toggle", () => {
+    // Eight plies, so the 7th move only appears once the full line is shown.
+    // Position is null in these tests, so pvToSan renders moves as raw UCI --
+    // "h2h4" is a stable marker for "the preview was extended".
+    const longPv = [
+      { a: "d2d4", b: null },
+      { a: "d7d5", b: null },
+      { a: "g1f3", b: null },
+      { a: "g8f6", b: null },
+      { a: "c2c4", b: null },
+      { a: "e7e6", b: null },
+      { a: "h2h4", b: null }, // 7th ply -- beyond the 6-ply preview
+      { a: "a7a6", b: null },
+    ];
+
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    it("defaults off: truncates each line and leaves the box unchecked", () => {
+      renderPanel({ analysis: analysis([line({ pv: longPv })]) });
+      expect(screen.getByRole("checkbox", { name: /All plies/ })).not.toBeChecked();
+      expect(screen.queryByText("h2h4")).toBeNull();
+    });
+
+    it("checking it reveals the full line and persists the choice", () => {
+      renderPanel({ analysis: analysis([line({ pv: longPv })]) });
+      fireEvent.click(screen.getByRole("checkbox", { name: /All plies/ }));
+      expect(screen.getByRole("checkbox", { name: /All plies/ })).toBeChecked();
+      expect(screen.getByText("h2h4")).toBeInTheDocument();
+      expect(localStorage.getItem("bh-engine-show-all-plies")).toBe("true");
+    });
+
+    it("reads the persisted preference on mount", () => {
+      localStorage.setItem("bh-engine-show-all-plies", "true");
+      renderPanel({ analysis: analysis([line({ pv: longPv })]) });
+      expect(screen.getByRole("checkbox", { name: /All plies/ })).toBeChecked();
+      expect(screen.getByText("h2h4")).toBeInTheDocument();
     });
   });
 });
