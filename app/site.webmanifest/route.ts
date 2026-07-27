@@ -17,8 +17,8 @@ export function GET(request: Request): Response {
 
   const manifest: MetadataRoute.Manifest & { orientation?: "any" | "natural" | "landscape" | "portrait" } =
     {
-      name: "Relay - Bughouse Chess Analysis Tool",
-      short_name: "Relay",
+      name: "Bughouse Analysis",
+      short_name: "Bughouse Analysis",
       start_url: "/",
       display: "standalone",
       background_color: "#ffffff",

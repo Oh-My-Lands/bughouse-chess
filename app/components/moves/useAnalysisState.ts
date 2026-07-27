@@ -1,5 +1,5 @@
 /**
- * `useAnalysisState` is the core client-side store for Relay's analysis UI.
+ * `useAnalysisState` is the core client-side store for the analysis UI.
  *
  * Conceptually we model analysis as a persistent-ish tree:
  * - **Nodes** are positions (two FENs + reserves + promoted markers)

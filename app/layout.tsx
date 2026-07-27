@@ -24,30 +24,29 @@ const firaCode = Fira_Code({
   display: "swap",
 });
 
-const siteTitle = "Relay - Bughouse Analysis";
+const siteTitle = "Bughouse Analysis";
 const siteDescription = "A minimalistic elegant tool for analyzing and replaying Bughouse Chess matches";
 
 export const metadata: Metadata = {
   metadataBase,
   title: {
     default: siteTitle,
-    template: "%s | Relay",
+    template: "%s | Bughouse Analysis",
   },
   description: siteDescription,
-  applicationName: "Relay",
+  applicationName: "Bughouse Analysis",
   keywords: [
     "bughouse",
     "bughouse chess",
     "analysis board",
     "chess analysis",
-    "relay",
     "game replay",
     "chess viewer",
     "chess variants",
   ],
   category: "Games",
-  creator: "Relay",
-  publisher: "Relay",
+  creator: "Bughouse Analysis",
+  publisher: "Bughouse Analysis",
   alternates: {
     canonical: "/",
   },
@@ -67,7 +66,7 @@ export const metadata: Metadata = {
     url: "/",
     title: siteTitle,
     description: siteDescription,
-    siteName: "Relay",
+    siteName: "Bughouse Analysis",
     locale: "en_US",
     images: [
       {
@@ -75,7 +74,7 @@ export const metadata: Metadata = {
         width: 1200,
         height: 630,
         type: "image/png",
-        alt: "Relay - Bughouse Analysis",
+        alt: "Bughouse Analysis",
       },
     ],
   },

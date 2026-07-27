@@ -1,8 +1,8 @@
-# Relay — Bughouse Chess Replay & Analysis Tool
+# Bughouse Analysis — Replay & Analysis for Bughouse Chess
 
 **[Try the App Here](https://bughouse.aronteh.com/)**
 
-Relay is an elegant tool for **replaying and analyzing bughouse games from
+Bughouse Analysis is an elegant tool for **replaying and analyzing bughouse games from
 chess.com**. It loads both boards of a bughouse match (the “partner” game),
 merges the moves into a single timeline, and gives you a powerful two-board UI
 for **drops**, **variations**, **live replay**, and **fast navigation**.
@@ -18,11 +18,11 @@ for **drops**, **variations**, **live replay**, and **fast navigation**.
   `https://bughouse.aronteh.com/?gameId=159878252255`
 - **Open shared games**: Use `?sharedId=<uuid>` to open games shared by other
   users
-- **Sample games**: When visiting without a game ID, Relay suggests a random
+- **Sample games**: When visiting without a game ID, Bughouse Analysis suggests a random
   sample game to explore
 - **Partner board auto-detection**
-  - If chess.com provides `partnerGameId`, Relay uses it.
-  - Otherwise, Relay probes nearby IDs to find the paired board.
+  - If chess.com provides `partnerGameId`, Bughouse Analysis uses it.
+  - Otherwise, Bughouse Analysis probes nearby IDs to find the paired board.
 
 ### Replay the match (two boards, one timeline)
 
@@ -46,7 +46,7 @@ for **drops**, **variations**, **live replay**, and **fast navigation**.
 - **Bughouse drops**
   - Click a reserve piece to “arm” a drop, then click a target square.
   - Or drag reserve pieces onto the board.
-- **Promotion picker**: when a move needs promotion, Relay asks you to pick a
+- **Promotion picker**: when a move needs promotion, Bughouse Analysis asks you to pick a
   piece.
 - **Reserves update correctly**: captures on one board feed the partner’s
   reserve.
@@ -78,7 +78,7 @@ for **drops**, **variations**, **live replay**, and **fast navigation**.
 ### Match navigation (multi-game)
 
 If you're playing a bughouse match consisting of multiple consecutive games,
-Relay can help you **discover and step through subsequent games** with the same
+Bughouse Analysis can help you **discover and step through subsequent games** with the same
 four players and the same team pairings (rate-limited to be gentle to
 chess.com).
 
@@ -120,7 +120,7 @@ chess.com).
 
 ### Progressive Web App (PWA)
 
-- **Installable**: Add Relay to your home screen for a native app-like
+- **Installable**: Add Bughouse Analysis to your home screen for a native app-like
   experience
 - **Landscape lock**: Android phones automatically lock to landscape orientation
   for optimal viewing
@@ -128,7 +128,7 @@ chess.com).
 
 ### Quick-open helpers (optional)
 
-- **Bookmarklet**: one-click bookmark to open the current game in Relay (see
+- **Bookmarklet**: one-click bookmark to open the current game in Bughouse Analysis (see
   [`user_scripts/bookmarklet.md`](user_scripts/bookmarklet.md))
 - **TamperMonkey**: adds "Ellipviewer" buttons to bughouse games in chess.com
   game history (see
@@ -171,7 +171,7 @@ chess.com).
 
 ### Firebase (optional, for metrics + analytics + user features)
 
-Relay supports:
+Bughouse Analysis supports:
 
 - **Firestore** (Admin SDK) for:
   - A single global metric: **how many games were loaded**
@@ -233,7 +233,7 @@ all). The server uses Firebase Admin SDK and bypasses rules.
 
 #### Firestore indexes (programmatic configuration)
 
-Relay keeps Firestore index definitions in `firestore.indexes.json` so indexes
+Bughouse Analysis keeps Firestore index definitions in `firestore.indexes.json` so indexes
 can be deployed alongside rules with the Firebase CLI:
 
 ```bash
@@ -242,7 +242,7 @@ firebase deploy --only firestore:indexes
 
 #### Firebase Authentication (optional, for user sign-in)
 
-Relay supports **Google sign-in** via Firebase Authentication. When enabled,
+Bughouse Analysis supports **Google sign-in** via Firebase Authentication. When enabled,
 users can sign in to unlock authenticated features like sharing games and
 syncing preferences across devices.
 
@@ -266,7 +266,7 @@ sidebar. Users can sign in with Google popup and sign out from the profile page.
 
 #### Firestore Collections Structure
 
-When using Firebase features, Relay creates the following Firestore structure:
+When using Firebase features, Bughouse Analysis creates the following Firestore structure:
 
 - `metrics/global` - Global game load counter (server-only access)
 - `sharedGames/{sharedId}` - Public shared games collection
