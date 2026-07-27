@@ -1,5 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import {
+  readCachedAnalysis,
+  writeCachedAnalysis,
+  type AnalysisCacheKey,
+} from "@/app/server/analysisCache";
+
 /**
  * Server-side proxy to the Hivemind RunPod serverless endpoint.
  *
@@ -45,6 +51,18 @@ const TOTAL_DEADLINE_MS = 240_000;
 const FIRST_POLL_MS = 150;
 const MAX_POLL_MS = 1_000;
 const POLL_BACKOFF = 1.5;
+
+/**
+ * A game review fires dozens of requests over several minutes, spaced far
+ * enough apart that RunPod's edge (Cloudflare) closes the idle keep-alive
+ * sockets between them. undici then picks one of those already-closed sockets
+ * out of its pool for the next request and surfaces `UND_ERR_SOCKET` ("other
+ * side closed") -- a connection that never carried the request, not an engine
+ * failure. It does not retry that itself, so a single blip out of dozens failed
+ * a whole review with a 504. These bound a short retry that absorbs it.
+ */
+const MAX_FETCH_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = 250;
 
 /**
  * Search budgets are clamped here, not just in the client.
@@ -155,6 +173,80 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /**
+ * Whether a thrown fetch error is a transient connection drop worth retrying.
+ *
+ * Scoped deliberately narrow. The one we have actually observed is undici
+ * reusing a keep-alive socket that RunPod's edge already closed, which throws a
+ * `TypeError: fetch failed` whose `cause` carries `code: 'UND_ERR_SOCKET'` and
+ * the message "other side closed"; the reset/timeout codes are the same class of
+ * connection-level failure and cost nothing to include. What is excluded
+ * matters as much: an `AbortError` is a real cancellation (the user left, or our
+ * deadline fired), and an HTTP error status is never thrown here at all -- the
+ * callers read `response.ok` themselves. Neither should be papered over.
+ */
+function isTransientConnectionError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return false;
+  const cause = err instanceof Error ? (err.cause as { code?: string; message?: string } | undefined) : undefined;
+  const code = cause?.code;
+  if (
+    code === "UND_ERR_SOCKET" ||
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "UND_ERR_CONNECT_TIMEOUT"
+  ) {
+    return true;
+  }
+  const message = `${err instanceof Error ? err.message : ""} ${cause?.message ?? ""}`;
+  return /other side closed/i.test(message);
+}
+
+/**
+ * `fetch` with a bounded retry for the transient connection drops above.
+ *
+ * A returned `Response` is handed straight back untouched -- including a 4xx/5xx
+ * status, which is not a transport failure and is the callers' to interpret.
+ * Only a thrown `isTransientConnectionError` is retried, and only while the
+ * request is neither aborted nor past its deadline, so a retry can never outlive
+ * the wait the rest of the route already bounds. `sleep` rejects on abort, so a
+ * client leaving mid-backoff surfaces as the same `AbortError` a live fetch
+ * would have.
+ *
+ * Retrying the `/run` POST is safe against double-billing precisely because the
+ * error we retry is pre-send: undici throws "other side closed" when it writes
+ * to a socket the peer has already closed, so no job was ever submitted. A reset
+ * that lands after the request reached RunPod is the rare exception; the cost of
+ * being wrong there is at most one extra job, itself capped by `MAX_NODES`.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal,
+  deadline: number,
+): Promise<Response> {
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    try {
+      return await fetch(url, { ...init, signal });
+    } catch (err) {
+      if (
+        attempt >= MAX_FETCH_ATTEMPTS ||
+        signal.aborted ||
+        Date.now() >= deadline ||
+        !isTransientConnectionError(err)
+      ) {
+        throw err;
+      }
+      console.warn(
+        `fetch ${url}: attempt ${attempt} hit a transient connection error, retrying`,
+        err,
+      );
+      await sleep(RETRY_BACKOFF_MS * attempt, signal);
+    }
+  }
+}
+
+/**
  * Tells RunPod to stop a job we are no longer waiting for.
  *
  * Without this the search runs to completion and is billed in full: a bestmove
@@ -204,7 +296,7 @@ async function pollUntilSettled(
     await sleep(wait, signal);
     wait = Math.min(Math.round(wait * POLL_BACKOFF), MAX_POLL_MS);
 
-    const response = await fetch(statusUrl, { headers: authHeaders(), signal });
+    const response = await fetchWithRetry(statusUrl, { headers: authHeaders() }, signal, deadline);
     if (!response.ok) {
       throw new Error(`RunPod status returned HTTP ${response.status}`);
     }
@@ -238,20 +330,58 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: built.error }, { status: 400 });
   }
 
+  /**
+   * Only `nodes` searches are cacheable.
+   *
+   * A `movetime` search fixes the clock and lets the work vary, so its result
+   * is not an answer to a repeatable question -- two runs of the same request
+   * did different amounts of searching, and neither is the one a later caller
+   * asked for. `nodes` fixes the work, which is what makes "at least this deep"
+   * a meaningful thing to store and compare.
+   */
+  // `built` is a union with the error shape, and the guard above cannot narrow
+  // it -- a Record<string, unknown> may legitimately carry an "error" key too.
+  // Every field below was written by buildEngineInput, so the assertion is
+  // describing that function's output rather than trusting the request.
+  const input = built as Record<string, unknown>;
+
+  const cacheKey: AnalysisCacheKey | null =
+    typeof input.nodes === "number"
+      ? {
+          fen: input.fen as string,
+          analysisBoard: input.analysisBoard as number,
+          team: input.team as string,
+          mode: input.mode as string,
+          nodes: input.nodes,
+          multipv: input.multipv as number,
+        }
+      : null;
+
+  if (cacheKey) {
+    const cached = readCachedAnalysis(cacheKey);
+    if (cached) {
+      // Same envelope as a live result: the client unwraps `output` and cannot
+      // tell the difference, which is the point -- a re-viewed report shows the
+      // numbers it showed the first time.
+      return NextResponse.json({ output: cached });
+    }
+  }
+
   const deadline = Date.now() + TOTAL_DEADLINE_MS;
 
   // Held outside the try so the catch can cancel a job that is still running.
   let jobId: string | undefined;
 
   try {
-    const response = await fetch(
+    const response = await fetchWithRetry(
       `https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/run`,
       {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ input: built }),
-        signal: request.signal,
       },
+      request.signal,
+      deadline,
     );
 
     if (!response.ok) {
@@ -285,6 +415,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // Handler-level errors travel inside a COMPLETED job's output; the client
     // checks `output.error`, so this passes through untouched.
+    //
+    // Stored after the status check and before returning. `writeCachedAnalysis`
+    // rejects outputs carrying an `error`, so a handler-level failure is not
+    // made permanent for that position.
+    if (cacheKey) writeCachedAnalysis(cacheKey, job.output);
+
     return NextResponse.json({ output: job.output });
   } catch (err) {
     // Every path here abandons a job that may still be searching, and a search

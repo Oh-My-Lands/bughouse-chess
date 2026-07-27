@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { engineMoveToAttempted, sideToMove } from "@/app/utils/engine/engineMove";
-import type { BughousePositionSnapshot } from "@/app/types/analysis";
+import {
+  engineMoveToAttempted,
+  halfMoveToUci,
+  sideToMove,
+} from "@/app/utils/engine/engineMove";
+import type {
+  BughouseHalfMove,
+  BughousePositionSnapshot,
+} from "@/app/types/analysis";
 
 const WHITE_TO_MOVE = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const BLACK_TO_MOVE = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 3 7";
@@ -89,5 +96,69 @@ describe("engineMoveToAttempted", () => {
     ])("%s", (_label, move) => {
       expect(engineMoveToAttempted(move, "A", snapshot())).toBeNull();
     });
+  });
+});
+
+describe("halfMoveToUci", () => {
+  /** A tree edge, with only the fields the spelling reads. */
+  function halfMove(fields: Partial<BughouseHalfMove>): BughouseHalfMove {
+    return {
+      board: "A",
+      side: "white",
+      kind: "normal",
+      san: "",
+      key: "",
+      ...fields,
+    };
+  }
+
+  it("spells a normal move", () => {
+    expect(
+      halfMoveToUci(halfMove({ normal: { from: "e2", to: "e4" } })),
+    ).toBe("e2e4");
+  });
+
+  it("spells a promotion", () => {
+    expect(
+      halfMoveToUci(halfMove({ normal: { from: "e7", to: "e8", promotion: "q" } })),
+    ).toBe("e7e8q");
+  });
+
+  it("spells a drop with an uppercase piece whatever the side", () => {
+    // Fairy-Stockfish writes the piece uppercase for both colours; matching a
+    // reported line depends on it.
+    const black = halfMove({
+      kind: "drop",
+      side: "black",
+      drop: { piece: "n", to: "f7" },
+    });
+    expect(halfMoveToUci(black)).toBe("N@f7");
+  });
+
+  it("returns null for an edge carrying neither move", () => {
+    expect(halfMoveToUci(halfMove({}))).toBeNull();
+  });
+
+  it("round-trips with engineMoveToAttempted", () => {
+    // The two spell the same moves in opposite directions; a drift between them
+    // would show up as a played move that silently never matches a line.
+    for (const uci of ["e2e4", "e7e8q", "N@f7"]) {
+      const attempted = engineMoveToAttempted(uci, "A", snapshot());
+      expect(attempted).not.toBeNull();
+      const move =
+        attempted!.kind === "drop"
+          ? halfMove({
+              kind: "drop",
+              drop: { piece: attempted!.piece, to: attempted!.to },
+            })
+          : halfMove({
+              normal: {
+                from: attempted!.from,
+                to: attempted!.to,
+                ...(attempted!.promotion ? { promotion: attempted!.promotion } : {}),
+              },
+            });
+      expect(halfMoveToUci(move)).toBe(uci);
+    }
   });
 });

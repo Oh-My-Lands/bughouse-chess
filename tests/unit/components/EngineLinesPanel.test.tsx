@@ -127,22 +127,55 @@ describe("EngineLinesPanel", () => {
     expect(props.onBoardChange).toHaveBeenCalledWith("B");
   });
 
-  it("offers only the two engine modes", () => {
-    // Mode is hashed into the position key, so it must never change on its own
-    // -- there is no derived third state to fall back to.
-    renderPanel();
-    expect(screen.getByRole("button", { name: "go" })).toHaveAttribute(
+  it("offers go, sit, and auto, with auto pressed while following the clock", () => {
+    // Mode follows the clock by default (auto). aria-pressed marks the *pin*, so
+    // in auto neither go nor sit is pressed -- the derived value is named by the
+    // auto button itself, leaving auto as the only pressed control.
+    renderPanel({ mode: "go", isModeAuto: true });
+    expect(screen.getByRole("button", { name: "auto(go)" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "sit" })).toBeInTheDocument();
-    expect(screen.queryByText(/auto/)).toBeNull();
+    expect(screen.getByRole("button", { name: "go" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "sit" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 
-  it("reports a mode change", () => {
+  it("marks the pinned mode as pressed once the clock is overridden", () => {
+    renderPanel({ mode: "sit", isModeAuto: false });
+    expect(screen.getByRole("button", { name: "sit" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "auto" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("names the clock-derived mode in the auto label", () => {
+    // The label is the only place the derived value shows, so it has to track it.
+    const { rerender, props } = renderPanel({ mode: "go", isModeAuto: true });
+    expect(screen.getByRole("button", { name: "auto(go)" })).toBeInTheDocument();
+    rerender(<EngineLinesPanel {...props} mode="sit" />);
+    expect(screen.getByRole("button", { name: "auto(sit)" })).toBeInTheDocument();
+  });
+
+  it("reports a mode pin", () => {
     const { props } = renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "sit" }));
     expect(props.onModeChange).toHaveBeenCalledWith("sit");
+  });
+
+  it("reports a return to auto", () => {
+    const { props } = renderPanel({ mode: "sit", isModeAuto: false });
+    fireEvent.click(screen.getByRole("button", { name: "auto" }));
+    expect(props.onModeAuto).toHaveBeenCalled();
   });
 
   it("surfaces an error instead of lines", () => {

@@ -29,11 +29,22 @@ On the box (Fedora, examples use `dnf`):
    dnf -y install nodejs   # verify: node -v  (must be >= 20.9)
    ```
 
+   The analysis cache additionally needs **Node ≥ 22.5**, because it uses the
+   built-in `node:sqlite` — chosen precisely so the server needs no native
+   module and no build toolchain. On an older Node the app still serves; it
+   logs `analysis cache disabled` and re-searches every position.
+
 2. **User & directories**
    ```sh
    useradd --system --create-home --home-dir /opt/analysis --shell /usr/sbin/nologin analysis
-   mkdir -p /opt/analysis/app
+   mkdir -p /opt/analysis/app /opt/analysis/data
+   chown analysis:analysis /opt/analysis/data
    ```
+
+   `data/` holds the analysis cache and is deliberately **outside** `app/`:
+   `deploy.sh` rsyncs over `app/`, which would delete the database on every
+   deploy. The service grants write access to it via `ReadWritePaths`, since
+   `ProtectSystem=strict` otherwise makes the filesystem read-only.
 
 3. **RunPod credentials** — server-side only, never in the repo or the client
    bundle. Create `/opt/analysis/env`:

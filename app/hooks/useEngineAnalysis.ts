@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BughouseBoardId, BughousePositionSnapshot } from "@/app/types/analysis";
 import { EngineError, analyzePosition } from "@/app/utils/engine/engineClient";
 import type { EngineAnalysis } from "@/app/utils/engine/engineClient";
+import { linesWithPlayedMove } from "@/app/utils/engine/engineLines";
 import { BughouseFenError, toEngineFen } from "@/app/utils/engine/bughouseFen";
 import type { EngineMode } from "@/app/utils/engine/engineMode";
 
@@ -13,7 +14,10 @@ export interface UseEngineAnalysisOptions {
   position: BughousePositionSnapshot | null;
   board: BughouseBoardId;
   side: "white" | "black";
-  /** Engine time model. Chosen explicitly; see engineMode. */
+  /**
+   * Engine time model. Derived per position from the clock (or a manual
+   * override), sampled once by the caller and passed in fixed; see engineMode.
+   */
   mode: EngineMode;
   /**
    * How many lines to *show*. Not how many to search for: every request asks
@@ -21,6 +25,14 @@ export interface UseEngineAnalysisOptions {
    * many of them are handed back. Changing it re-renders; it never re-searches.
    */
   multipv?: number;
+  /**
+   * The move actually played from this position on the analysed board, in the
+   * engine's UCI spelling. When the search ranked it below `multipv` it is
+   * appended to the lines handed back, so a move that was played can be
+   * compared against the ones that were not -- the same thing a review finding
+   * shows. Purely a display concern: it never changes what is searched.
+   */
+  playedMove?: string | null;
   nodes?: number;
   /**
    * When false, nothing is requested automatically — `refresh()` still runs a
@@ -55,18 +67,35 @@ const DEFAULT_NODES = 50_000;
 /**
  * How many lines every search asks for, whatever the user has chosen to see.
  *
- * The engine is MCTS: it visits every root move anyway, so reporting N lines
- * costs the same search as reporting one -- MultiPV only decides how much of
- * the finished tree gets printed. But it is a UCI option read *before* the
- * search starts, so a line that was not requested cannot be recovered from a
- * result afterwards.
+ * The engine is MCTS: it visits every root move anyway, so MultiPV decides how
+ * much of the finished tree gets printed far more than how hard it searches.
+ * Not quite free at this width -- printing and parsing 20 PVs at every depth
+ * measured ~9% fewer nps against multipv 3, worst case 7,803 -- but the search
+ * is the small half of a request: 50k nodes is ~6s inside a ~27s billed job, so
+ * 9% of the search is ~2% of the cost. MultiPV is a UCI option read *before*
+ * the search starts, so a line that was not requested cannot be recovered from
+ * the result afterwards.
  *
  * Requesting the maximum every time and slicing here is what makes the line
  * count a free control. The alternative -- sending the user's choice -- would
  * make raising it a cache miss, and a cache miss is a fresh RunPod job: ~20s
  * of billed overhead to redisplay numbers the previous search already had.
+ *
+ * 20 rather than the selector's ceiling of 5 because this also bounds how often
+ * `playedMove` can be shown: a move ranked below it was never reported, so
+ * there is nothing to append. Measured over 29 real positions, the played move
+ * ranked outside the top 5 in three of them and outside the top 10 in one --
+ * and was missing from a 20-line report in none. Matching REVIEW_MULTIPV (and
+ * the proxy's MAX_MULTIPV) also lets the two tiers share the server cache,
+ * whose lookup demands a stored `multipv` at least as wide as the request: a
+ * live result can now answer a review scan, which a 5-line one never could.
+ *
+ * What no width buys is a played move the search never expanded. Progressive
+ * widening bounds the candidate set: for 20 requested, the benchmark positions
+ * returned 20, 20, 14, 6, 4 and 3 lines, the last being a midgame holding 18
+ * pieces in hand. Pocket size, not rank, is what hides a move here.
  */
-const ENGINE_MULTIPV = 5;
+const ENGINE_MULTIPV = 20;
 
 /**
  * How many analyses to keep.
@@ -95,6 +124,7 @@ export function useEngineAnalysis(
     side,
     mode,
     multipv = DEFAULT_MULTIPV,
+    playedMove = null,
     nodes = DEFAULT_NODES,
     enabled = false,
     debounceMs = DEFAULT_DEBOUNCE_MS,
@@ -259,18 +289,16 @@ export function useEngineAnalysis(
   }, []);
 
   // Stored analyses always hold the full ENGINE_MULTIPV lines; the line count
-  // is applied on the way out. Memoised so that a render which changes neither
-  // the entry nor the count hands back the same object -- consumers compare
-  // `analysis` by identity. Short results are passed through untouched rather
-  // than copied, so slicing cannot introduce a new object where there is
-  // nothing to trim.
+  // -- and the played move that outranked it -- are applied on the way out.
+  // Memoised so that a render which changes none of the three hands back the
+  // same object; consumers compare `analysis` by identity.
   const cached = cache.get(resultKey) ?? null;
   const analysis = useMemo(
     () =>
-      cached && cached.lines.length > multipv
-        ? { ...cached, lines: cached.lines.slice(0, multipv) }
-        : cached,
-    [cached, multipv],
+      cached
+        ? { ...cached, lines: linesWithPlayedMove(cached.lines, multipv, playedMove) }
+        : null,
+    [cached, multipv, playedMove],
   );
 
   // Both derived from the position on screen, so navigation needs no reset:

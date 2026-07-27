@@ -17,6 +17,13 @@ Environment=HOSTNAME=127.0.0.1
 # read server-side only by /api/engine/run; they are NOT NEXT_PUBLIC_ and are
 # never shipped to the browser.
 EnvironmentFile=/opt/analysis/env
+# Durable store for finished engine searches, so re-opening a game does not
+# re-buy its analysis. Deliberately outside /opt/analysis/app: deploy.sh rsyncs
+# over that directory and would delete the database on every deploy.
+#
+# Unset this to disable the cache; the app treats it as an optimisation and
+# runs normally without it.
+Environment=ANALYSIS_CACHE_PATH=/opt/analysis/data/analysis-cache.sqlite
 ExecStart=/usr/bin/node /opt/analysis/app/server.js
 Restart=on-failure
 RestartSec=5
@@ -24,6 +31,11 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# ProtectSystem=strict makes the whole filesystem read-only, so the cache
+# directory has to be granted back explicitly. Without this the service still
+# serves analysis -- it just logs "analysis cache disabled" and searches every
+# position afresh, which is easy to miss because nothing user-visible breaks.
+ReadWritePaths=/opt/analysis/data
 
 [Install]
 WantedBy=multi-user.target

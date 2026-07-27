@@ -250,7 +250,11 @@ describe("useEngineAnalysis", () => {
   });
 
   describe("line count", () => {
-    /** Five ranked lines, as a real MultiPV 5 search returns. */
+    /**
+     * Five ranked lines, as a search returns when progressive widening expanded
+     * only five root moves -- fewer than the request asked for, which is the
+     * normal case in a position with pieces in hand.
+     */
     const FIVE_LINES = {
       output: {
         ...RESPONSE.output,
@@ -299,7 +303,9 @@ describe("useEngineAnalysis", () => {
       });
 
       const body = JSON.parse(spy.mock.calls[0][1].body as string);
-      expect(body.input.multipv).toBe(5);
+      // ENGINE_MULTIPV, well past the selector's ceiling of 5: the lines beyond
+      // it are what lets the played move be appended when it ranked lower.
+      expect(body.input.multipv).toBe(20);
     });
 
     it("changing the count filters the cached result without re-searching", async () => {
@@ -351,6 +357,99 @@ describe("useEngineAnalysis", () => {
       const first = result.current.analysis;
       rerender();
       expect(result.current.analysis).toBe(first);
+    });
+
+    it("appends the played move when it ranked below the count", async () => {
+      // Same thing a review finding shows: the move under review is the one
+      // most likely to have fallen outside the top few, and a ranking that cuts
+      // it off answers what to play instead but not how bad it was.
+      fiveLineFetch();
+      const { result } = renderHook(() =>
+        useEngineAnalysis({
+          ...baseOptions,
+          position: position(),
+          enabled: false,
+          multipv: 2,
+          playedMove: "b1c3",
+        }),
+      );
+
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(result.current.analysis).not.toBeNull());
+
+      const lines = result.current.analysis!.lines;
+      expect(lines.map((line) => line.move)).toEqual(["d2d4", "e2e4", "b1c3"]);
+      // Labelled with its real rank, not renumbered as a third line.
+      expect(lines[2].multipv).toBe(5);
+    });
+
+    it("surfaces a played move ranked past the selector's ceiling", async () => {
+      // Why the search is wider than anything the selector can display. Rank 12
+      // is the worst case in the measured distribution (29 positions); at the
+      // old width of 5 this move was never reported and could not be shown at
+      // all, whatever the user picked.
+      const lines = Array.from({ length: 20 }, (_, i) => ({
+        multipv: i + 1, move: `move${i + 1}`, partnerMove: null,
+        q: -0.01 * i, visits: 20000 - i * 900, prior: 0.3,
+        score: { kind: "cp", value: -4 }, pv: [],
+      }));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ output: { ...RESPONSE.output, lines } }),
+        }) as Response),
+      );
+
+      const { result } = renderHook(() =>
+        useEngineAnalysis({
+          ...baseOptions,
+          position: position(),
+          enabled: false,
+          multipv: 5,
+          playedMove: "move12",
+        }),
+      );
+
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(result.current.analysis).not.toBeNull());
+
+      const shown = result.current.analysis!.lines;
+      expect(shown).toHaveLength(6);
+      expect(shown[5].move).toBe("move12");
+      expect(shown[5].multipv).toBe(12);
+    });
+
+    it("appending the played move costs no search", async () => {
+      // It comes out of the lines already fetched, so navigating between
+      // positions cannot turn it into a request.
+      const spy = fiveLineFetch();
+      const { result, rerender } = renderHook(
+        (props: { playedMove: string | null }) =>
+          useEngineAnalysis({
+            ...baseOptions,
+            position: position(),
+            enabled: false,
+            multipv: 2,
+            ...props,
+          }),
+        { initialProps: { playedMove: null as string | null } },
+      );
+
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(result.current.analysis).not.toBeNull());
+      expect(result.current.analysis?.lines).toHaveLength(2);
+
+      rerender({ playedMove: "c2c4" });
+      expect(result.current.analysis?.lines).toHaveLength(3);
+      expect(spy).toHaveBeenCalledTimes(1);
     });
   });
 });

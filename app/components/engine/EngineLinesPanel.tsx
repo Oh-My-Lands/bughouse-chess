@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { AlertTriangle, Loader2, Play, RefreshCw } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Play, RefreshCw } from "lucide-react";
 
 import type {
   BughouseBoardId,
@@ -58,9 +58,15 @@ interface EngineLinesPanelProps {
  * lower-ranked lines are backed by very few visits and their evaluations are
  * correspondingly weak. Watch the visit bar, not the rank.
  *
- * Every search asks the engine for the top option here regardless of the
- * selection, so switching between these is a filter over a result already in
- * hand -- no request, no wait. See ENGINE_MULTIPV in useEngineAnalysis.
+ * Every search asks the engine for ENGINE_MULTIPV lines -- well past this
+ * ceiling -- so switching between these is a filter over a result already in
+ * hand: no request, no wait. See useEngineAnalysis.
+ *
+ * The ceiling stays at 5 while the search goes wider because the two answer
+ * different questions. The lines past 5 are there so the played move can be
+ * appended when the engine ranked it lower; they are not worth listing on their
+ * own, in a crowded column, at visit counts that make them barely more than
+ * network priors.
  */
 const MULTIPV_OPTIONS = [1, 2, 3, 4, 5] as const;
 
@@ -207,48 +213,82 @@ export function EngineLinesPanel({
     <div className="flex flex-col gap-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
+          {onToggleCollapsed && (
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? "Expand engine panel" : "Collapse engine panel"}
+              className="rounded p-0.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            >
+              {collapsed ? (
+                <ChevronRight className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </button>
+          )}
           <span className="text-sm font-semibold text-slate-200">Engine</span>
-          <label
-            className="flex cursor-pointer items-center gap-1 text-xs text-slate-400 hover:text-slate-300"
-            title="Show each candidate's full line instead of the first few moves"
-          >
-            <input
-              type="checkbox"
-              checked={showAllPlies}
-              onChange={(e) => setShowAllPlies(e.target.checked)}
-              className="h-3 w-3 rounded border-slate-600 bg-slate-800 text-mariner-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-mariner-400/60"
-            />
-            All plies
-          </label>
+          {reviewed && (
+            <span
+              className="rounded border border-mariner-500/40 bg-mariner-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-mariner-200"
+              title="The engine's own review analysis of this move, from the deep search — not a live search."
+            >
+              Reviewed
+            </span>
+          )}
+          {!collapsed && (
+            <label
+              className="flex cursor-pointer items-center gap-1 text-xs text-slate-400 hover:text-slate-300"
+              title="Show each candidate's full line instead of the first few moves"
+            >
+              <input
+                type="checkbox"
+                checked={showAllPlies}
+                onChange={(e) => setShowAllPlies(e.target.checked)}
+                className="h-3 w-3 rounded border-slate-600 bg-slate-800 text-mariner-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-mariner-400/60"
+              />
+              All plies
+            </label>
+          )}
           {isAnalyzing && (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          <BoardSelector board={board} onChange={onBoardChange} />
-          <ModeSelector mode={mode} onChange={onModeChange} />
-          {/*
-            The empty state offers its own labelled button, which is far more
-            discoverable than a bare icon. Showing both would be two controls
-            doing one thing, so this one defers until there is a result to
-            re-run -- or an error to retry.
-          */}
-          {(lines.length > 0 || error) && (
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={isAnalyzing}
-              className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-40"
-              aria-label="Run analysis"
-              title="Analyse this position again"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
+        {!collapsed && (
+          <div className="flex items-center gap-2">
+            <BoardSelector board={board} onChange={onBoardChange} />
+            <ModeSelector
+              mode={mode}
+              isAuto={isModeAuto}
+              onChange={onModeChange}
+              onAuto={onModeAuto}
+            />
+            {/*
+              The empty state offers its own labelled button, which is far more
+              discoverable than a bare icon. Showing both would be two controls
+              doing one thing, so this one defers until there is a result to
+              re-run -- or an error to retry.
+            */}
+            {(lines.length > 0 || error) && (
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={isAnalyzing}
+                className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-40"
+                aria-label="Run analysis"
+                title="Analyse this position again"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
+      {!collapsed && (
+        <>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
         <MultiPvSelector multipv={multipv} onChange={onMultipvChange} />
         <NodeSelector nodes={nodes} onChange={onNodesChange} />
@@ -366,6 +406,8 @@ export function EngineLinesPanel({
           )}
         </div>
       )}
+        </>
+      )}
     </div>
   );
 }
@@ -481,35 +523,65 @@ const MODE_TITLES: Record<EngineMode, string> = {
 /**
  * Mode control.
  *
- * Explicit rather than derived from the clocks: Mode is hashed into the
- * position key, so a value that changes on its own silently invalidates the
- * tree and moves the evaluation under whoever is reading it.
+ * Mode follows the clock by default (`auto`): it is derived once per position
+ * from that position's time advantage, so it is stable within a search and only
+ * changes on navigation. `go`/`sit` pin it, overriding the clock until `auto` is
+ * chosen again. A pin is hashed into the position key, so pressing one re-searches
+ * (see onModeChange) rather than reinterpreting a tree built under another mode.
+ *
+ * When `auto`, the clock-derived value is shown in the auto button's own label
+ * (`auto(go)`) rather than by highlighting `go`/`sit`: highlighting those made a
+ * derived value look pinned, so the pin highlight now means only a pin.
  */
 function ModeSelector({
   mode,
+  isAuto,
   onChange,
+  onAuto,
 }: {
   mode: EngineMode;
+  isAuto: boolean;
   onChange: (mode: EngineMode) => void;
+  onAuto: () => void;
 }) {
   return (
     <div className="flex overflow-hidden rounded border border-slate-700 text-xs">
-      {(["go", "sit"] as const).map((option) => (
-        <button
-          key={option}
-          type="button"
-          onClick={() => onChange(option)}
-          aria-pressed={mode === option}
-          title={MODE_TITLES[option]}
-          className={`px-2 py-0.5 ${
-            mode === option
-              ? "bg-slate-700 text-slate-100"
-              : "text-slate-400 hover:bg-slate-800"
-          }`}
-        >
-          {option}
-        </button>
-      ))}
+      {(["go", "sit"] as const).map((option) => {
+        const pinned = !isAuto && mode === option;
+        return (
+          <button
+            key={option}
+            type="button"
+            onClick={() => onChange(option)}
+            aria-pressed={pinned}
+            title={MODE_TITLES[option]}
+            className={`px-2 py-0.5 ${
+              pinned
+                ? "bg-slate-700 text-slate-100"
+                : "text-slate-400 hover:bg-slate-800"
+            }`}
+          >
+            {option}
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        onClick={onAuto}
+        aria-pressed={isAuto}
+        title={
+          isAuto
+            ? `following the clock — ${MODE_TITLES[mode]}`
+            : "follow the clock"
+        }
+        className={`border-l border-slate-700 px-2 py-0.5 ${
+          isAuto
+            ? "bg-slate-700 text-slate-100"
+            : "text-slate-400 hover:bg-slate-800"
+        }`}
+      >
+        {isAuto ? `auto(${mode})` : "auto"}
+      </button>
     </div>
   );
 }

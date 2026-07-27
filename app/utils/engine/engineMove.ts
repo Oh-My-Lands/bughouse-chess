@@ -3,6 +3,7 @@ import type { Square } from "chess.js";
 import type {
   AttemptedBughouseHalfMove,
   BughouseBoardId,
+  BughouseHalfMove,
   BughousePieceType,
   BughousePositionSnapshot,
   BughousePromotionPiece,
@@ -39,6 +40,25 @@ export function sideToMove(
   const fen = board === "A" ? position.fenA : position.fenB;
   // Field 2 of a FEN is the side to move.
   return fen.trim().split(/\s+/)[1] === "b" ? "black" : "white";
+}
+
+/**
+ * Writes a half-move the way the engine does, so a move from the game (or from
+ * the variation tree) can be matched against the moves it reports back.
+ *
+ * The inverse of `engineMoveToAttempted`, minus the sit: a half-move always
+ * moved something. Null is for a malformed edge carrying neither a normal move
+ * nor a drop, which no reported line can match.
+ */
+export function halfMoveToUci(move: BughouseHalfMove): string | null {
+  if (move.drop) {
+    // Drops use Fairy-Stockfish's `P@e6`: uppercase piece, regardless of side.
+    return `${move.drop.piece.toUpperCase()}@${move.drop.to}`;
+  }
+  if (move.normal) {
+    return `${move.normal.from}${move.normal.to}${move.normal.promotion ?? ""}`;
+  }
+  return null;
 }
 
 /**

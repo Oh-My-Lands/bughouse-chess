@@ -51,3 +51,5 @@ ui-debug.log
 # Process PID files (created by test scripts)
 .firebase-emulator.pid
 .nextjs-server.pid
+# raw measurement output from scripts/phase*.ts (regenerable; ~2 MB)
+scripts/*.raw.json
