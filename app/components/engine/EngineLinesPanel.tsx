@@ -32,20 +32,55 @@ interface EngineLinesPanelProps {
    * notation; the underlying moves stay UCI everywhere else.
    */
   position: BughousePositionSnapshot | null;
-  /** Engine time model. */
+  /** Engine time model. The effective value: the clock-derived mode, or the pin. */
   mode: EngineMode;
+  /** True when `mode` is following the clock rather than a manual pin. */
+  isModeAuto: boolean;
   /** Search budget in nodes. */
   nodes: number;
   /** How many candidate moves to rank. */
   multipv: number;
   onBoardChange: (board: BughouseBoardId) => void;
+  /** Pin the mode, overriding the clock. */
   onModeChange: (mode: EngineMode) => void;
+  /** Clear the pin and follow the clock again. */
+  onModeAuto: () => void;
   onNodesChange: (nodes: number) => void;
   onMultipvChange: (multipv: number) => void;
+  /**
+   * The move actually played from this position on `board`, in the engine's UCI
+   * spelling, or null when there is none (end of the line, or a board that never
+   * moves again).
+   *
+   * Marks its row so the played move can be found at a glance. `linesWithPlayedMove`
+   * already guarantees the move is listed when the search reported it, but a row
+   * appended at rank 11 and a row sitting third in the ranking look identical --
+   * and the third one is the easier of the two to lose among its neighbours.
+   */
+  playedMove?: string | null;
   /** Runs one search for the current position. */
   onRefresh: () => void;
-  /** Plays a candidate into the variation tree. */
-  onPlayMove?: (line: EngineLine) => void;
+  /**
+   * Plays the first `plyCount` plies of a line into the variation tree.
+   *
+   * `plyCount` is 1-based, and 1 is the candidate move itself -- the header row
+   * and the first ply of the preview are the same click. Every ply carries both
+   * boards, because that is what the engine searched: see `engineLineToMovePath`.
+   */
+  onPlayLine?: (line: EngineLine, plyCount: number) => void;
+  /**
+   * When set, the panel shows a collapse toggle in its header and hides its body
+   * while `collapsed`. Used to give the move list and the review panel room in a
+   * crowded column. Omitted, the panel is always expanded and shows no toggle.
+   */
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+  /**
+   * When true, the panel is showing a finished review search rather than a live
+   * one: it labels the result "Reviewed" and hides the controls that would
+   * re-search (board, mode, budget, refresh), since the ranking is frozen.
+   */
+  reviewed?: boolean;
 }
 
 /**
@@ -137,18 +172,31 @@ function titleFor(label: string): string | undefined {
 /** Plies shown per candidate line when not showing the full variation. */
 const PV_PREVIEW_PLIES = 6;
 
+/** Tooltip for a ply, which plays everything up to and including itself. */
+function playPlyTitle(plyCount: number): string {
+  return plyCount === 1
+    ? "Play this move into the move list"
+    : `Play the first ${plyCount} plies of this line into the move list`;
+}
+
 function PvPreview({
   line,
   board,
   side,
   position,
   showAllPlies,
+  onPlayPly,
 }: {
   line: EngineLine;
   board: BughouseBoardId;
   side: BughouseSide;
   position: BughousePositionSnapshot | null;
   showAllPlies: boolean;
+  /**
+   * Plays the line up to a ply. Omitted when the line cannot be played at all,
+   * which leaves the preview as plain text rather than dead buttons.
+   */
+  onPlayPly?: (plyCount: number) => void;
 }) {
   // PVs are joint actions over both boards. Showing only the user's half would
   // misrepresent the line, since the partner's moves are part of why it scores
@@ -165,14 +213,34 @@ function PvPreview({
       {plies.map((ply, index) => {
         const mine = board === "A" ? ply.a : ply.b;
         const theirs = board === "A" ? ply.b : ply.a;
-        return (
-          <span key={index} className="whitespace-nowrap">
+        const plyCount = index + 1;
+        const content = (
+          <>
             <span className="text-slate-200" title={titleFor(mine)}>
               {mine}
             </span>
             <span className="text-slate-500" title={titleFor(theirs)}>
               /{theirs}
             </span>
+          </>
+        );
+        // The whole pair is one target, not each half: a ply is a joint action,
+        // and playing one board's half of it alone is not a position the engine
+        // ever evaluated.
+        return onPlayPly ? (
+          <button
+            key={index}
+            type="button"
+            data-testid="engine-line-ply"
+            onClick={() => onPlayPly(plyCount)}
+            title={playPlyTitle(plyCount)}
+            className="whitespace-nowrap rounded px-0.5 transition hover:bg-slate-700 hover:text-slate-100"
+          >
+            {content}
+          </button>
+        ) : (
+          <span key={index} className="whitespace-nowrap px-0.5">
+            {content}
           </span>
         );
       })}
@@ -195,15 +263,21 @@ export function EngineLinesPanel({
   board,
   side,
   mode,
+  isModeAuto,
   position,
   nodes,
   multipv,
+  playedMove = null,
   onBoardChange,
   onModeChange,
+  onModeAuto,
   onNodesChange,
   onMultipvChange,
   onRefresh,
-  onPlayMove,
+  onPlayLine,
+  collapsed = false,
+  onToggleCollapsed,
+  reviewed = false,
 }: EngineLinesPanelProps) {
   const lines = analysis?.lines ?? [];
   const totalVisits = lines.reduce((sum, line) => sum + line.visits, 0);
@@ -323,72 +397,111 @@ export function EngineLinesPanel({
 
       {lines.length > 0 && (
         <ol className="flex flex-col gap-1">
-          {lines.map((line) => (
-            <li key={line.multipv}>
-              <button
-                type="button"
-                data-testid="engine-line-row"
-                onClick={() => onPlayMove?.(line)}
-                disabled={!onPlayMove || line.move === null}
-                className="group w-full rounded px-2 py-1.5 text-left transition hover:bg-slate-800 disabled:cursor-default disabled:hover:bg-transparent"
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="w-4 shrink-0 text-xs text-slate-500">
-                    {line.multipv}
-                  </span>
-                  <span
-                    data-testid="engine-line-move"
-                    className={`font-mono text-sm ${
-                      line.move === null
-                        ? "italic text-amber-300"
-                        : "text-slate-100"
+          {lines.map((line) => {
+            // A sit is reported as a null move, and `playedMove` is null whenever
+            // there is no next move on this board, so the two have to be compared
+            // only once there is a move to compare against.
+            const played = playedMove !== null && line.move === playedMove;
+            // A sit is the analysed side choosing not to move, which has no
+            // half-move and so no edge: there is nothing to graft onto the tree,
+            // and nothing after it in the line can be reached either.
+            const playable = Boolean(onPlayLine) && line.move !== null;
+            return (
+              <li key={line.multipv}>
+                <div
+                  data-testid="engine-line-row"
+                  data-played={played || undefined}
+                  title={played ? "Played in the game" : undefined}
+                  className={`rounded p-1.5 ${
+                    played
+                      ? "bg-yellow-400/10 ring-1 ring-inset ring-yellow-400/50"
+                      : ""
+                  }`}
+                >
+                  <button
+                    type="button"
+                    data-testid="engine-line-play"
+                    onClick={() => onPlayLine?.(line, 1)}
+                    disabled={!playable}
+                    title={playable ? playPlyTitle(1) : undefined}
+                    className={`w-full rounded px-1 py-0.5 text-left transition disabled:cursor-default disabled:hover:bg-transparent ${
+                      played ? "hover:bg-yellow-400/15" : "hover:bg-slate-800"
                     }`}
                   >
-                    {candidateToSan(line.move, board, position)}
-                  </span>
+                    <div className="flex items-baseline gap-2">
+                      <span
+                        className={`w-4 shrink-0 text-xs ${
+                          played ? "text-yellow-400" : "text-slate-500"
+                        }`}
+                      >
+                        {line.multipv}
+                      </span>
+                      <span
+                        data-testid="engine-line-move"
+                        className={`font-mono text-sm ${
+                          line.move === null
+                            ? "italic text-amber-300"
+                            : played
+                              ? "font-semibold text-yellow-300"
+                              : "text-slate-100"
+                        }`}
+                      >
+                        {candidateToSan(line.move, board, position)}
+                      </span>
+                      {/*
+                        q alone. The centipawn figure the engine also reports is a
+                        pure function of q (180*tan(1.56*q)), so showing both put two
+                        columns where there is one measurement -- and the pawn unit
+                        misleads in bughouse, where material flows between boards: a
+                        whole queen moves the evaluation only ~0.1, which reads as
+                        "slight edge" to anyone importing chess intuition.
+                      */}
+                      <span
+                        className="ml-auto font-mono text-sm tabular-nums text-slate-100"
+                        title="The engine's verdict on this move, from the analysed side's view: +1 winning, 0 even, −1 losing. Mates show as #N."
+                      >
+                        {formatEval(line)}
+                      </span>
+                    </div>
+
+                    <div className="mt-1 flex items-center gap-2">
+                      <div
+                        className="h-0.5 rounded bg-sky-500/60"
+                        style={{ width: confidenceWidth(line, totalVisits) }}
+                        aria-hidden
+                      />
+                      <span className="shrink-0 text-xs tabular-nums text-slate-500">
+                        <span title="How much the engine studied this move.">
+                          {formatVisits(line.visits)} visits
+                        </span>{" "}
+                        ·{" "}
+                        <span title="The engine's instinct for this move before any calculation.">
+                          p={line.prior.toFixed(3)}
+                        </span>
+                      </span>
+                    </div>
+                  </button>
+
                   {/*
-                    q alone. The centipawn figure the engine also reports is a
-                    pure function of q (180*tan(1.56*q)), so showing both put two
-                    columns where there is one measurement -- and the pawn unit
-                    misleads in bughouse, where material flows between boards: a
-                    whole queen moves the evaluation only ~0.1, which reads as
-                    "slight edge" to anyone importing chess intuition.
+                    Outside the header button: each ply is its own control, and a
+                    button cannot be nested inside another.
                   */}
-                  <span
-                    className="ml-auto font-mono text-sm tabular-nums text-slate-100"
-                    title="The engine's verdict on this move, from the analysed side's view: +1 winning, 0 even, −1 losing. Mates show as #N."
-                  >
-                    {formatEval(line)}
-                  </span>
-                </div>
-
-                <div className="mt-1 flex items-center gap-2">
-                  <div
-                    className="h-0.5 rounded bg-sky-500/60"
-                    style={{ width: confidenceWidth(line, totalVisits) }}
-                    aria-hidden
+                  <PvPreview
+                    line={line}
+                    board={board}
+                    side={side}
+                    position={position}
+                    showAllPlies={showAllPlies}
+                    onPlayPly={
+                      playable
+                        ? (plyCount) => onPlayLine?.(line, plyCount)
+                        : undefined
+                    }
                   />
-                  <span className="shrink-0 text-xs tabular-nums text-slate-500">
-                    <span title="How much the engine studied this move.">
-                      {formatVisits(line.visits)} visits
-                    </span>{" "}
-                    ·{" "}
-                    <span title="The engine's instinct for this move before any calculation.">
-                      p={line.prior.toFixed(3)}
-                    </span>
-                  </span>
                 </div>
-
-                <PvPreview
-                  line={line}
-                  board={board}
-                  side={side}
-                  position={position}
-                  showAllPlies={showAllPlies}
-                />
-              </button>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ol>
       )}
 

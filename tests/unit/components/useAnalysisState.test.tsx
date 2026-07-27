@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import type { PieceValuePreset } from "@/app/utils/analysis/captureMaterial";
+import { validateAndApplyBughouseHalfMove } from "@/app/utils/analysis/applyMove";
+import type {
+  AttemptedBughouseHalfMove,
+  BughousePositionSnapshot,
+  MovePathStep,
+} from "@/app/types/analysis";
 import { useAnalysisState, reorderSimultaneousCheckmateMove } from "../../../app/components/moves/useAnalysisState";
 import { processGameData } from "@/app/utils/board/moveOrdering";
 import type { BughouseMove } from "../../../app/types/bughouse";
@@ -83,6 +89,110 @@ describe("useAnalysisState", () => {
     });
 
     expect(result.current.state.pendingPromotion).toBeNull();
+  });
+
+  describe("applyMovePath", () => {
+    /**
+     * Validates a chain the way a caller must: each move against the position
+     * the one before it produced, which is exactly what `tryApplyMove` cannot do
+     * in a loop, since it always applies at the cursor.
+     */
+    function buildPath(
+      from: BughousePositionSnapshot,
+      attempts: AttemptedBughouseHalfMove[],
+    ): MovePathStep[] {
+      let position = from;
+      const steps: MovePathStep[] = [];
+      for (const attempted of attempts) {
+        const applied = validateAndApplyBughouseHalfMove(position, attempted);
+        if (applied.type !== "ok") {
+          throw new Error(`setup move rejected: ${JSON.stringify(attempted)}`);
+        }
+        steps.push({ move: applied.move, next: applied.next });
+        position = applied.next;
+      }
+      return steps;
+    }
+
+    const E4_A: AttemptedBughouseHalfMove = {
+      kind: "normal",
+      board: "A",
+      from: "e2",
+      to: "e4",
+    };
+    const D4_B: AttemptedBughouseHalfMove = {
+      kind: "normal",
+      board: "B",
+      from: "d2",
+      to: "d4",
+    };
+
+    it("adds the whole chain and lands the cursor on its last move", () => {
+      const { result } = renderHook(() => useAnalysisState());
+      const path = buildPath(result.current.currentPosition, [E4_A, D4_B]);
+
+      act(() => {
+        result.current.applyMovePath(path);
+      });
+
+      expect(Object.keys(result.current.state.tree.nodesById)).toHaveLength(3);
+      expect(result.current.currentNode.incomingMove?.board).toBe("B");
+      expect(result.current.state.selectedNodeId).toBe(
+        result.current.state.cursorNodeId,
+      );
+    });
+
+    it("walks onto moves that already exist rather than duplicating them", () => {
+      // A line that transposes into the tree should extend it, not fork a second
+      // copy of the same move beside it.
+      const { result } = renderHook(() => useAnalysisState());
+      const path = buildPath(result.current.currentPosition, [E4_A, D4_B]);
+
+      act(() => {
+        result.current.tryApplyMove(E4_A);
+      });
+      act(() => {
+        result.current.applyMovePath(path, { fromNodeId: "root" });
+      });
+
+      expect(Object.keys(result.current.state.tree.nodesById)).toHaveLength(3);
+      expect(result.current.state.tree.nodesById.root.children).toHaveLength(1);
+    });
+
+    it("grafts onto a given node instead of the cursor", () => {
+      // What a review finding needs: its candidates belong to the position
+      // before the flagged move, while the cursor may be on the move itself.
+      const { result } = renderHook(() => useAnalysisState());
+      const path = buildPath(result.current.currentPosition, [D4_B]);
+
+      act(() => {
+        result.current.tryApplyMove(E4_A);
+      });
+      const cursorBefore = result.current.state.cursorNodeId;
+
+      act(() => {
+        result.current.applyMovePath(path, { fromNodeId: "root" });
+      });
+
+      expect(result.current.currentNode.parentId).toBe("root");
+      expect(result.current.state.cursorNodeId).not.toBe(cursorBefore);
+      expect(result.current.state.tree.nodesById.root.children).toHaveLength(2);
+      // The first branch stays the mainline; the graft is the variation.
+      expect(result.current.state.tree.nodesById.root.mainChildId).toBe(
+        cursorBefore,
+      );
+    });
+
+    it("does nothing when the chain is empty", () => {
+      const { result } = renderHook(() => useAnalysisState());
+
+      act(() => {
+        result.current.applyMovePath([]);
+      });
+
+      expect(result.current.state.cursorNodeId).toBe("root");
+      expect(Object.keys(result.current.state.tree.nodesById)).toHaveLength(1);
+    });
   });
 
   it("navigates backward correctly", () => {

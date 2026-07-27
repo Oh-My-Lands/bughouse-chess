@@ -44,14 +44,16 @@ function renderPanel(over: Partial<Parameters<typeof EngineLinesPanel>[0]> = {})
     side: "white" as const,
     position: null,
     mode: "go" as const,
+    isModeAuto: true,
     nodes: 50_000,
     multipv: 3,
     onBoardChange: vi.fn(),
     onModeChange: vi.fn(),
+    onModeAuto: vi.fn(),
     onNodesChange: vi.fn(),
     onMultipvChange: vi.fn(),
     onRefresh: vi.fn(),
-    onPlayMove: vi.fn(),
+    onPlayLine: vi.fn(),
     ...over,
   };
   return { props, ...render(<EngineLinesPanel {...props} />) };
@@ -103,15 +105,88 @@ describe("EngineLinesPanel", () => {
 
   it("does not let a sit line be played into the variation tree", () => {
     renderPanel({ analysis: analysis([line({ move: null })]) });
-    expect(screen.getByTestId("engine-line-row")).toBeDisabled();
+    expect(screen.getByTestId("engine-line-play")).toBeDisabled();
   });
 
-  it("plays a candidate when its row is clicked", () => {
-    const { props } = renderPanel();
-    fireEvent.click(screen.getByTestId("engine-line-row"));
-    expect(props.onPlayMove).toHaveBeenCalledWith(
-      expect.objectContaining({ move: "d2d4" }),
-    );
+  describe("playing a line into the move list", () => {
+    it("plays the candidate as ply 1 when the header row is clicked", () => {
+      const { props } = renderPanel();
+      fireEvent.click(screen.getByTestId("engine-line-play"));
+      expect(props.onPlayLine).toHaveBeenCalledWith(
+        expect.objectContaining({ move: "d2d4" }),
+        1,
+      );
+    });
+
+    it("plays everything up to a ply when that ply is clicked", () => {
+      // Clicking the second ply asks for both plies, not just the second: a
+      // variation is a prefix of the line, not a move plucked out of it.
+      const { props } = renderPanel();
+      fireEvent.click(screen.getAllByTestId("engine-line-ply")[1]);
+      expect(props.onPlayLine).toHaveBeenCalledWith(
+        expect.objectContaining({ move: "d2d4" }),
+        2,
+      );
+    });
+
+    it("makes the whole ply one target rather than each board's half", () => {
+      // A ply is a joint action over both boards. Playing one board's half of it
+      // alone is not a position the engine ever evaluated, so there is no
+      // control that would ask for it.
+      renderPanel();
+      const ply = screen.getAllByTestId("engine-line-ply")[1];
+      expect(ply).toHaveTextContent("d7d5");
+      expect(ply).toHaveTextContent("e2e4");
+    });
+
+    it("leaves the plies inert when a sit means nothing can be played", () => {
+      renderPanel({ analysis: analysis([line({ move: null })]) });
+      expect(screen.queryByTestId("engine-line-ply")).toBeNull();
+    });
+
+    it("leaves the plies inert when the panel takes no play handler", () => {
+      renderPanel({ onPlayLine: undefined });
+      expect(screen.queryByTestId("engine-line-ply")).toBeNull();
+      expect(screen.getByTestId("engine-line-play")).toBeDisabled();
+    });
+  });
+
+  describe("the played move", () => {
+    // The panel lists the played move whether the engine ranked it first or
+    // eleventh, and the ranking alone does not say which row it is -- the case
+    // that started this was a played move sitting inside the top five, where
+    // nothing distinguished it from its neighbours.
+    it("marks the row of the move actually played", () => {
+      renderPanel({
+        analysis: analysis([
+          line({ multipv: 1, move: "d2d4" }),
+          line({ multipv: 2, move: "e2e4" }),
+        ]),
+        playedMove: "e2e4",
+      });
+      const rows = screen.getAllByTestId("engine-line-row");
+      expect(rows[0]).not.toHaveAttribute("data-played");
+      expect(rows[1]).toHaveAttribute("data-played", "true");
+    });
+
+    it("marks nothing when the played move is not among the lines", () => {
+      renderPanel({ playedMove: "h2h4" });
+      expect(screen.getByTestId("engine-line-row")).not.toHaveAttribute(
+        "data-played",
+      );
+    });
+
+    it("does not mark a sit line when there is no played move", () => {
+      // Sit reports a null move and "no next move on this board" is also null,
+      // so comparing the two directly would mark every sit as played.
+      renderPanel({
+        analysis: analysis([line({ move: null })]),
+        playedMove: null,
+      });
+      expect(screen.getByTestId("engine-line-row")).not.toHaveAttribute(
+        "data-played",
+      );
+    });
   });
 
   it("shows a mate score instead of a q value", () => {

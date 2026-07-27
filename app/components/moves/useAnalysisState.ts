@@ -49,6 +49,7 @@ import type {
   BughouseHalfMove,
   BughousePositionSnapshot,
   BughousePromotionPiece,
+  MovePathStep,
 } from "../../types/analysis";
 import {
   createInitialPositionSnapshot,
@@ -120,7 +121,7 @@ type Action =
   | { type: "CLOSE_VARIATION_SELECTOR" }
   | { type: "SET_VARIATION_SELECTOR_INDEX"; selectedChildIndex: number }
   | { type: "SET_PENDING_PROMOTION"; pendingPromotion: PendingPromotionState | null }
-  | { type: "APPLY_MOVE_EDGE"; move: BughouseHalfMove; next: BughousePositionSnapshot }
+  | { type: "APPLY_MOVE_PATH"; steps: readonly MovePathStep[]; fromNodeId?: string }
   | { type: "RECALCULATE_CAPTURE_MATERIAL"; pieceValuePreset: PieceValuePreset };
 
 function toAttemptedMove(move: BughouseHalfMove): AttemptedBughouseHalfMove | null {
@@ -248,6 +249,58 @@ function isValidNodeId(tree: AnalysisTree, nodeId: string): boolean {
 }
 
 /**
+ * Hangs one move off `parentId`, or walks onto the child that already carries it.
+ *
+ * Reusing an existing child is what makes a line that transposes into moves
+ * already in the tree extend them rather than fork a duplicate beside them --
+ * so replaying the game's own continuation out of the engine panel walks the
+ * mainline instead of cloning it. Matching is by `key`, the move's stable
+ * identity.
+ */
+function appendEdge(
+  tree: AnalysisTree,
+  parentId: string,
+  move: BughouseHalfMove,
+  next: BughousePositionSnapshot,
+  createId: () => string,
+): { tree: AnalysisTree; nodeId: string } {
+  const parent = tree.nodesById[parentId];
+  if (!parent) return { tree, nodeId: parentId };
+
+  const existingChildId = parent.children.find(
+    (childId) => tree.nodesById[childId]?.incomingMove?.key === move.key,
+  );
+  if (existingChildId) return { tree, nodeId: existingChildId };
+
+  const newId = createId();
+  const newNode: AnalysisNode = {
+    id: newId,
+    parentId: parent.id,
+    incomingMove: move,
+    position: next,
+    children: [],
+    mainChildId: null,
+  };
+  const nextParent: AnalysisNode = {
+    ...parent,
+    children: [...parent.children, newId],
+    mainChildId: parent.mainChildId ?? newId,
+  };
+
+  return {
+    tree: {
+      ...tree,
+      nodesById: {
+        ...tree.nodesById,
+        [parent.id]: nextParent,
+        [newId]: newNode,
+      },
+    },
+    nodeId: newId,
+  };
+}
+
+/**
  * Internal extension of AnalysisState used only by the reducer implementation.
  * We keep the ID factory stable without threading it through every action.
  */
@@ -325,57 +378,28 @@ function reducer(state: InternalState, action: Action): InternalState {
         : state;
     case "SET_PENDING_PROMOTION":
       return { ...state, pendingPromotion: action.pendingPromotion };
-    case "APPLY_MOVE_EDGE": {
-      const parent = state.tree.nodesById[state.cursorNodeId];
-      if (!parent) return state;
+    case "APPLY_MOVE_PATH": {
+      // `fromNodeId` lets a caller graft a line onto a node that is not the
+      // cursor. A review finding needs exactly that: its candidate moves belong
+      // to the position *before* the flagged move, while the cursor may be
+      // sitting on the flagged move itself.
+      const startNodeId = action.fromNodeId ?? state.cursorNodeId;
+      if (!state.tree.nodesById[startNodeId]) return state;
 
-      // If this exact move already exists as a child, just advance the cursor.
-      const existingChildId = parent.children.find((childId) => {
-        const child = state.tree.nodesById[childId];
-        return child?.incomingMove?.key === action.move.key;
-      });
-      if (existingChildId) {
-        const nextCursorNodeId = existingChildId;
-        const nextClockAnchorNodeId = isNodeOnMainline(state.tree, nextCursorNodeId)
-          ? nextCursorNodeId
-          : state.clockAnchorNodeId;
-        return {
-          ...state,
-          cursorNodeId: nextCursorNodeId,
-          selectedNodeId: nextCursorNodeId,
-          clockAnchorNodeId: nextClockAnchorNodeId,
-          pendingDrop: null,
-          variationSelector: null,
-          pendingPromotion: null,
-        };
+      let nextTree = state.tree;
+      let nextCursorNodeId = startNodeId;
+      for (const step of action.steps) {
+        const appended = appendEdge(
+          nextTree,
+          nextCursorNodeId,
+          step.move,
+          step.next,
+          state._internalCreateId,
+        );
+        nextTree = appended.tree;
+        nextCursorNodeId = appended.nodeId;
       }
 
-      const newId = state._internalCreateId();
-      const newNode: AnalysisNode = {
-        id: newId,
-        parentId: parent.id,
-        incomingMove: action.move,
-        position: action.next,
-        children: [],
-        mainChildId: null,
-      };
-
-      const nextParent: AnalysisNode = {
-        ...parent,
-        children: [...parent.children, newId],
-        mainChildId: parent.mainChildId ?? newId,
-      };
-
-      const nextTree: AnalysisTree = {
-        ...state.tree,
-        nodesById: {
-          ...state.tree.nodesById,
-          [parent.id]: nextParent,
-          [newId]: newNode,
-        },
-      };
-
-      const nextCursorNodeId = newId;
       const nextClockAnchorNodeId = isNodeOnMainline(nextTree, nextCursorNodeId)
         ? nextCursorNodeId
         : state.clockAnchorNodeId;
@@ -410,6 +434,22 @@ export interface UseAnalysisStateResult {
    * The returned result is suitable for immediate UI feedback (toast, modal, etc.).
    */
   tryApplyMove: (attempted: AttemptedBughouseHalfMove) => ValidateAndApplyResult;
+  /**
+   * Add an already-validated chain of moves to the tree in one step, and land
+   * the cursor on its last node.
+   *
+   * The chain is validated by the caller because each move has to be applied to
+   * the position the previous one produced -- `tryApplyMove` always applies to
+   * the cursor, so calling it in a loop would apply every move to the same
+   * position. See `MovePathStep`.
+   *
+   * Moves that already exist are walked onto rather than duplicated, so a line
+   * that transposes into the tree extends it.
+   */
+  applyMovePath: (
+    steps: readonly MovePathStep[],
+    options?: { fromNodeId?: string },
+  ) => void;
   /**
    * Load a chess.com game into the analysis tree as the mainline, overwriting current analysis.
    */
@@ -495,7 +535,10 @@ export function useAnalysisState(
         pieceValuePreset,
       });
       if (result.type === "ok") {
-        dispatch({ type: "APPLY_MOVE_EDGE", move: result.move, next: result.next });
+        dispatch({
+          type: "APPLY_MOVE_PATH",
+          steps: [{ move: result.move, next: result.next }],
+        });
       } else if (result.type === "needs_promotion" && attempted.kind === "normal") {
         dispatch({
           type: "SET_PENDING_PROMOTION",
@@ -510,6 +553,18 @@ export function useAnalysisState(
       return result;
     },
     [currentPosition, pieceValuePreset],
+  );
+
+  const applyMovePath = useCallback(
+    (steps: readonly MovePathStep[], options?: { fromNodeId?: string }) => {
+      if (steps.length === 0) return;
+      dispatch({
+        type: "APPLY_MOVE_PATH",
+        steps,
+        fromNodeId: options?.fromNodeId,
+      });
+    },
+    [],
   );
 
   const commitPromotion = useCallback(
@@ -800,6 +855,7 @@ export function useAnalysisState(
     currentNode,
     currentPosition,
     tryApplyMove,
+    applyMovePath,
     loadGameMainline,
     selectNode,
     navBack,

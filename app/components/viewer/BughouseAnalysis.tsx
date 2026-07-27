@@ -20,7 +20,12 @@ import { processGameData } from "../../utils/board/moveOrdering";
 import { deriveBughouseConclusionSummary } from "../../utils/board/gameConclusion";
 import type { BughouseMove } from "../../types/bughouse";
 import type { BughousePlayer } from "../../types/bughouse";
-import type { AnalysisNode, BughouseBoardId, BughouseSide } from "../../types/analysis";
+import type {
+  AnalysisNode,
+  AnalysisTree,
+  BughouseBoardId,
+  BughouseSide,
+} from "../../types/analysis";
 import { buildBughouseClockTimeline } from "../../utils/analysis/buildBughouseClockTimeline";
 import { buildPerBoardMoveDurationsDeciseconds } from "../../utils/analysis/buildPerBoardMoveDurationsDeciseconds";
 import { getClockTintClasses, getTeamTimeDiffDeciseconds } from "../../utils/board/clockAdvantage";
@@ -35,10 +40,27 @@ import VariationSelector from "../moves/VariationSelector";
 import PromotionPicker from "../board/PromotionPicker";
 import MoveListWithVariations from "../moves/MoveListWithVariations";
 import { EngineLinesPanel } from "../engine/EngineLinesPanel";
+import { GameReviewPanel } from "../review/GameReviewPanel";
 import { useEngineAnalysis } from "../../hooks/useEngineAnalysis";
-import { engineMoveToAttempted, sideToMove } from "../../utils/engine/engineMove";
-import type { EngineLine } from "../../utils/engine/engineClient";
-import type { EngineMode } from "../../utils/engine/engineMode";
+import { useGameReview } from "../../hooks/useGameReview";
+import {
+  DEEP_NODES,
+  gradedMistakesFrom,
+  type ReviewedPosition,
+} from "../../utils/review/reviewGame";
+import {
+  reviewScopeChoices,
+  reviewScopeId,
+  type ReviewScopeChoice,
+} from "../../utils/review/reviewScope";
+import {
+  halfMoveToUci,
+  sideToMove,
+} from "../../utils/engine/engineMove";
+import { engineLineToMovePath } from "../../utils/engine/enginePvVariation";
+import type { EngineAnalysis, EngineLine } from "../../utils/engine/engineClient";
+import { linesWithPlayedMove } from "../../utils/engine/engineLines";
+import { deriveEngineMode, type EngineMode } from "../../utils/engine/engineMode";
 import { ChessTitleBadge } from "../badges/ChessTitleBadge";
 import { TooltipAnchor } from "../ui/TooltipAnchor";
 import { BoardCornerMaterial } from "../board/BoardCornerMaterial";
@@ -148,6 +170,36 @@ const PLACEHOLDER_PLAYERS: {
 const DESKTOP_FULLSCREEN_MEDIA_QUERY = "(hover: hover) and (pointer: fine)";
 
 /**
+ * The move played next on one board from a node, in the engine's spelling.
+ *
+ * This is what lets the engine panel show the played move beside the engine's
+ * own choices, the way a review finding does -- there the move is part of the
+ * finding, here it has to be read back out of the tree.
+ *
+ * The walk is forward rather than one step: the boards interleave, so the next
+ * move on the analysed board can be several nodes down the line with the
+ * partner's moves in between. It follows `mainChildId`, which is the game
+ * itself on the mainline and the variation's own continuation inside one -- in
+ * both cases the move actually made from the position on screen. At the end of
+ * a line, or on a board that never moves again, there is nothing to show.
+ */
+function nextPlayedMoveOnBoard(
+  tree: AnalysisTree,
+  fromNodeId: string,
+  board: BughouseBoardId,
+): string | null {
+  let nodeId = tree.nodesById[fromNodeId]?.mainChildId ?? null;
+  while (nodeId) {
+    const node: AnalysisNode | undefined = tree.nodesById[nodeId];
+    if (!node) return null;
+    const move = node.incomingMove;
+    if (move && move.board === board) return halfMoveToUci(move);
+    nodeId = node.mainChildId;
+  }
+  return null;
+}
+
+/**
  * Interactive analysis experience for a two-board bughouse position:
  * - always renders both boards from first paint (start position when no game loaded)
  * - supports move entry + drops + nested variations (wired via analysis store)
@@ -248,6 +300,7 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
     setVariationSelectorIndex,
     acceptVariationSelector,
     tryApplyMove,
+    applyMovePath,
     setPendingDrop,
     commitPromotion: commitPromotionBase,
     cancelPendingPromotion,
@@ -1042,16 +1095,56 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
    */
   const engineEndpoint = process.env.NEXT_PUBLIC_ENGINE_ENDPOINT ?? "";
   const [engineBoardId, setEngineBoardId] = useState<BughouseBoardId>("A");
-  // "go" is the conservative default: it is the smaller action space, so it
-  // cannot invent a double-sit the team has not earned.
-  const [engineMode, setEngineMode] = useState<EngineMode>("go");
+  // Mode is derived from the clock (below). This is the user's *pin*: null means
+  // "follow the clock", a value means they have overridden it and it stays put
+  // across navigation until they clear it back to auto.
+  const [engineModeOverride, setEngineModeOverride] = useState<EngineMode | null>(
+    null,
+  );
   const [engineNodes, setEngineNodes] = useState(50_000);
   const [engineMultipv, setEngineMultipv] = useState(3);
+  // The engine panel can be folded to a one-line header so the review panel and
+  // move list get the column. Stored as the user's *override*; the effective
+  // state defaults to collapsed while a review holds findings (below), which is
+  // when the column is most crowded -- but the user can always fold it back.
+  const [engineCollapsedOverride, setEngineCollapsedOverride] =
+    useState<boolean | null>(null);
 
   // Analyse for whoever is to move on the chosen board -- that is the side the
   // candidate moves belong to. Boards have independent turns, so this is read
   // per board rather than shared.
   const engineSide = sideToMove(currentPosition, engineBoardId);
+
+  // The clock the engine derives Mode from: the *static* timeline entry at the
+  // analysed ply, read straight from the timeline rather than the live-replay
+  // snapshot so it cannot tick mid-search. `useEngineAnalysis` always searches
+  // `currentPosition` at the cursor, so the ply is the cursor's (anchored when
+  // off the mainline, matching how the clock is displayed).
+  const engineClockSnapshot = useMemo(() => {
+    if (!clockTimelineResult) return null;
+    const ply = getGlobalPlyCountAtNode(effectiveClockNodeId);
+    const i = Math.min(Math.max(ply, 0), clockTimelineResult.timeline.length - 1);
+    return clockTimelineResult.timeline[i] ?? null;
+  }, [clockTimelineResult, getGlobalPlyCountAtNode, effectiveClockNodeId]);
+
+  // Mode as the clock would set it for this position, sampled once. Stable
+  // within a search because it is a pure function of the (historical) clock and
+  // is part of the request key; it changes only when the position does.
+  const derivedEngineMode: EngineMode = useMemo(
+    () =>
+      engineClockSnapshot
+        ? deriveEngineMode(engineClockSnapshot, engineBoardId, engineSide)
+        : "go",
+    [engineClockSnapshot, engineBoardId, engineSide],
+  );
+
+  // A user pin wins; otherwise follow the clock.
+  const effectiveEngineMode = engineModeOverride ?? derivedEngineMode;
+
+  const playedMoveFromCursor = useMemo(
+    () => nextPlayedMoveOnBoard(state.tree, state.cursorNodeId, engineBoardId),
+    [state.tree, state.cursorNodeId, engineBoardId],
+  );
 
   const {
     analysis: engineAnalysis,
@@ -1063,38 +1156,14 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
     position: currentPosition,
     board: engineBoardId,
     side: engineSide,
-    mode: engineMode,
+    mode: effectiveEngineMode,
     nodes: engineNodes,
     multipv: engineMultipv,
+    playedMove: playedMoveFromCursor,
     // Analysis is always explicit: `enabled` stays false, so nothing is
     // requested until the user asks. Navigating a game costs nothing, and a
     // search happens only on the analyse button.
   });
-
-  /** Plays an engine candidate into the variation tree. */
-  const handlePlayEngineMove = useCallback(
-    (line: EngineLine) => {
-      const attempted = engineMoveToAttempted(
-        line.move,
-        engineBoardId,
-        currentPosition,
-      );
-      if (!attempted) {
-        // Sit has no half-move representation, so it cannot become a variation.
-        toast("Sit cannot be played as a variation.");
-        return;
-      }
-
-      const result = tryApplyMove(attempted);
-      if (result.type === "error") {
-        // The engine searched the position we sent it, so a rejection here
-        // means the two disagree about the position -- worth surfacing rather
-        // than silently ignoring.
-        toast.error(result.message);
-      }
-    },
-    [currentPosition, engineBoardId, tryApplyMove],
-  );
 
   /**
    * Precompute the mainline node IDs by ply so live replay can jump in O(1) when time advances.
@@ -1134,6 +1203,195 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
     if (!onShareGameFromPly || !canShareFromMove) return false;
     return mainlinePlyByNodeId.has(nodeId);
   }, [canShareFromMove, mainlinePlyByNodeId, onShareGameFromPly]);
+
+  /* ---------------------------------------------------------------- review */
+
+  // The scopes a review can run for -- the four players of the loaded game.
+  const reviewScopes = useMemo(
+    () => (processedGame ? reviewScopeChoices(processedGame.players) : []),
+    [processedGame],
+  );
+  // Only the user's *override* is stored, as a scope id; the effective scope is
+  // derived. This keeps the default (the first player) and the game-change reset
+  // out of an effect: when the game changes `reviewScopes` changes, and an
+  // override that no longer matches any player simply falls back to the first.
+  const [reviewScopeOverride, setReviewScopeOverride] = useState<string | null>(null);
+  const reviewScope = useMemo<ReviewScopeChoice | null>(() => {
+    const chosen = reviewScopes.find(
+      (scope) => reviewScopeId(scope) === reviewScopeOverride,
+    );
+    return chosen ?? reviewScopes[0] ?? null;
+  }, [reviewScopes, reviewScopeOverride]);
+
+  const gameReview = useGameReview({
+    endpoint: engineEndpoint,
+    combinedMoves: processedGame?.combinedMoves,
+    // Lets each reviewed position derive its Mode from its own clock instead of
+    // a blanket "go"; indexed by globalPly, the before-move instant a
+    // ReviewPosition represents.
+    clockTimeline: clockTimelineResult?.timeline,
+    scope: reviewScope
+      ? { board: reviewScope.board, side: reviewScope.side }
+      : null,
+    // Lets a finished review be remembered in the browser and re-hydrated on
+    // reopen. Same id the initial-ply restore keys on.
+    gameId: gameData?.original?.game?.id?.toString() ?? null,
+  });
+
+  // A finding is keyed by its index into `combinedMoves`; the flagged move is
+  // `combinedMoves[g]`, and the position it was searched from is node `[g]`.
+  // Land the cursor there -- before the move -- so the board shows the position
+  // the review's candidate moves are legal in and the panel's ranking reads
+  // against what is on screen.
+  const handleJumpToReviewPly = useCallback(
+    (globalPly: number) => {
+      const nodeId = mainlineNodeIdsByGlobalPly[globalPly];
+      if (nodeId) selectNode(nodeId);
+    },
+    [mainlineNodeIdsByGlobalPly, selectNode],
+  );
+
+  // Findings' deep search, keyed by the nodes a user lands on for that finding.
+  //
+  // A finding at ply `g` searched the position *before* combinedMoves[g] (node
+  // `[g]`, where the jump lands) and flags the move itself (node `[g+1]`). Both
+  // point at the same finding, so either cursor position shows its analysis --
+  // stepping forward onto the flagged move keeps the finding on screen.
+  const reviewFindingByNodeId = useMemo(() => {
+    const byNode = new Map<string, ReviewedPosition>();
+    if (!gameReview.report) return byNode;
+    for (const graded of gradedMistakesFrom(gameReview.report)) {
+      const g = graded.entry.position.globalPly;
+      const beforeNode = mainlineNodeIdsByGlobalPly[g];
+      const moveNode = mainlineNodeIdsByGlobalPly[g + 1];
+      if (beforeNode) byNode.set(beforeNode, graded.entry);
+      if (moveNode) byNode.set(moveNode, graded.entry);
+    }
+    return byNode;
+  }, [gameReview.report, mainlineNodeIdsByGlobalPly]);
+
+  const reviewFinding = reviewFindingByNodeId.get(state.cursorNodeId) ?? null;
+
+  // When on a finding, the engine panel shows the review's deep ranking rather
+  // than a live search: the top `engineMultipv`, plus the played move with its
+  // true rank when it fell outside them -- so a mistake the engine ranked 11th
+  // still appears, labelled 11, instead of vanishing from the list.
+  //
+  // The line count honours the same control the live panel does. The deep search
+  // kept up to REVIEW_MULTIPV lines, well past the selector's ceiling, so this is
+  // a free reslice of cached data -- the reason `onMultipvChange` does not drop
+  // the finding to a live search the way the other controls do.
+  //
+  // `nodes` is filled so the footer reads "200,000 nodes". The moves are
+  // candidates at the position *before* the flagged move, so the panel is fed
+  // that board/side/snapshot for notation, independent of the board cursor.
+  const reviewAnalysis = useMemo<EngineAnalysis | null>(() => {
+    if (!reviewFinding?.deepLines?.length) return null;
+    return {
+      lines: linesWithPlayedMove(
+        reviewFinding.deepLines,
+        engineMultipv,
+        reviewFinding.position.playedMove,
+      ),
+      bestMoveA: null,
+      bestMoveB: null,
+      analysisBoard: reviewFinding.position.board,
+      depth: null,
+      nodes: DEEP_NODES,
+      timeMs: null,
+    };
+  }, [reviewFinding, engineMultipv]);
+
+  // Touching a control over a review result switches *that* position to a live
+  // search, so the restored controls do something instead of sitting dead on a
+  // frozen ranking. Tracked by node so navigating to another finding shows its
+  // review again; coming back here stays live. The "Reviewed" label rides on
+  // `showingReviewAnalysis`, so it drops the moment you go live.
+  const [liveOverrideNode, setLiveOverrideNode] = useState<string | null>(null);
+  const showingReviewAnalysis =
+    reviewAnalysis !== null && state.cursorNodeId !== liveOverrideNode;
+  const goLiveHere = useCallback(
+    () => setLiveOverrideNode(state.cursorNodeId),
+    [state.cursorNodeId],
+  );
+
+  /**
+   * Where an engine line is grafted onto the tree, and which board it belongs to.
+   *
+   * Normally the cursor: the panel is analysing the position on screen. On a
+   * review finding it is the node *before* the flagged move instead, because
+   * that is the position the frozen ranking was searched from -- and the cursor
+   * may be one step past it, on the flagged move itself, where those candidates
+   * are not legal. Anchoring here is what lets a finding's candidates be played,
+   * which is where wanting them is most obvious: "show me what I should have
+   * done" belongs in the move list, next to what was actually done.
+   *
+   * The position comes from the anchored *node*, not from the review's own
+   * snapshot of it, so what is validated against is always what the tree holds.
+   */
+  const engineLineAnchor = useMemo<{ nodeId: string; board: BughouseBoardId }>(() => {
+    if (showingReviewAnalysis && reviewFinding) {
+      const nodeId =
+        mainlineNodeIdsByGlobalPly[reviewFinding.position.globalPly] ??
+        state.cursorNodeId;
+      return { nodeId, board: reviewFinding.position.board };
+    }
+    return { nodeId: state.cursorNodeId, board: engineBoardId };
+  }, [
+    engineBoardId,
+    mainlineNodeIdsByGlobalPly,
+    reviewFinding,
+    showingReviewAnalysis,
+    state.cursorNodeId,
+  ]);
+
+  /**
+   * Plays the first `plyCount` plies of an engine line into the variation tree.
+   *
+   * Both boards go in. A PV ply is a joint action and the evaluation beside it
+   * is the value of that joint sequence, so taking only the analysed board's
+   * half would build a line the engine never scored -- and one that would not
+   * stay legal either, since a drop is often only possible because the partner
+   * captured that piece. See `engineLineToMovePath`.
+   */
+  const handlePlayEngineLine = useCallback(
+    (line: EngineLine, plyCount: number) => {
+      const anchorNode = state.tree.nodesById[engineLineAnchor.nodeId];
+      if (!anchorNode) return;
+
+      const { steps, completedPlies } = engineLineToMovePath(
+        line,
+        plyCount,
+        engineLineAnchor.board,
+        anchorNode.position,
+        { pieceValuePreset },
+      );
+
+      if (steps.length === 0) {
+        // Reachable when the engine and our board disagree about the position.
+        // A sit is not: the panel refuses to play a line that starts with one.
+        toast.error("That line cannot be played from this position.");
+        return;
+      }
+      if (completedPlies < plyCount) {
+        // Planting a shorter line than the one clicked, silently, would read as
+        // the whole line having gone in.
+        toast(
+          `Only the first ${completedPlies} ${completedPlies === 1 ? "ply" : "plies"} of that line could be played here.`,
+        );
+      }
+
+      applyMovePath(steps, { fromNodeId: engineLineAnchor.nodeId });
+    },
+    [applyMovePath, engineLineAnchor, pieceValuePreset, state.tree.nodesById],
+  );
+
+  // Fold the engine panel by default once a review has run -- but expand it on a
+  // finding (whether it is showing the review or a live search you switched to),
+  // so the analysis is actually visible. The user's manual toggle wins over both.
+  const engineCollapsed =
+    engineCollapsedOverride ??
+    (reviewFinding ? false : gameReview.report !== null);
 
   /**
    * Seek the live replay playhead (and cursor) to a specific global ply while keeping playback running.
@@ -2338,24 +2596,118 @@ const BughouseAnalysis: React.FC<BughouseAnalysisProps> = ({
                 and since the move list is the flexible child it was the one
                 that collapsed -- the panel could squeeze it to nothing. */}
             <div className="flex h-full min-h-0 flex-col gap-2">
+              {engineEndpoint && reviewScopes.length > 0 ? (
+                <div className="min-h-0 max-h-[45%] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
+                  <GameReviewPanel
+                    scopes={reviewScopes}
+                    selectedScope={
+                      reviewScope
+                        ? { board: reviewScope.board, side: reviewScope.side }
+                        : null
+                    }
+                    onSelectScope={(scope) =>
+                      setReviewScopeOverride(reviewScopeId(scope))
+                    }
+                    status={gameReview.status}
+                    progress={gameReview.progress}
+                    report={gameReview.report}
+                    positionCount={gameReview.positionCount}
+                    replayError={gameReview.replayError}
+                    error={gameReview.error}
+                    onStart={gameReview.start}
+                    onCancel={gameReview.cancel}
+                    onJump={handleJumpToReviewPly}
+                  />
+                </div>
+              ) : null}
               {engineEndpoint ? (
-                <div className="min-h-0 max-h-[55%] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
+                <div
+                  className={[
+                    "min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800",
+                    // Collapsed, the panel is a one-line header, so it should
+                    // take only that; expanded, cap it so it cannot crush the
+                    // move list.
+                    engineCollapsed ? "shrink-0" : "max-h-[55%]",
+                  ].join(" ")}
+                >
                   <EngineLinesPanel
-                    analysis={engineAnalysis}
-                    isAnalyzing={isEngineAnalyzing}
-                    error={engineError}
-                    board={engineBoardId}
-                    side={engineSide}
-                    position={currentPosition}
-                    mode={engineMode}
+                    // On a finding, show the review's own deep ranking, rendered
+                    // against the position before the flagged move -- where its
+                    // candidates are legal, and where the jump parks the board.
+                    // Fed explicitly so the notation stays correct if the user
+                    // steps forward onto the move itself. Otherwise, the live
+                    // engine analysis for the current position.
+                    analysis={showingReviewAnalysis ? reviewAnalysis : engineAnalysis}
+                    isAnalyzing={showingReviewAnalysis ? false : isEngineAnalyzing}
+                    error={showingReviewAnalysis ? null : engineError}
+                    board={
+                      showingReviewAnalysis && reviewFinding
+                        ? reviewFinding.position.board
+                        : engineBoardId
+                    }
+                    side={
+                      showingReviewAnalysis && reviewFinding
+                        ? reviewFinding.position.side
+                        : engineSide
+                    }
+                    position={
+                      showingReviewAnalysis && reviewFinding
+                        ? reviewFinding.position.position
+                        : currentPosition
+                    }
+                    mode={effectiveEngineMode}
+                    isModeAuto={engineModeOverride === null}
                     nodes={engineNodes}
                     multipv={engineMultipv}
-                    onBoardChange={setEngineBoardId}
-                    onModeChange={setEngineMode}
-                    onNodesChange={setEngineNodes}
+                    // Marks the played move's row. Read from the finding while it
+                    // is on screen, for the same reason the board and position
+                    // are: the review's ranking belongs to the position before
+                    // the flagged move, so stepping forward onto the move itself
+                    // must not repoint this at the *next* move on that board.
+                    playedMove={
+                      showingReviewAnalysis && reviewFinding
+                        ? reviewFinding.position.playedMove
+                        : playedMoveFromCursor
+                    }
+                    // Each control drops this position to a live search first, so
+                    // it acts on something real rather than the frozen review.
+                    onBoardChange={(value) => {
+                      goLiveHere();
+                      setEngineBoardId(value);
+                    }}
+                    // Pinning a mode overrides the clock and re-searches, so the
+                    // pinned value never lands on a tree built under another mode.
+                    onModeChange={(value) => {
+                      goLiveHere();
+                      setEngineModeOverride(value);
+                    }}
+                    // Back to following the clock.
+                    onModeAuto={() => {
+                      goLiveHere();
+                      setEngineModeOverride(null);
+                    }}
+                    onNodesChange={(value) => {
+                      goLiveHere();
+                      setEngineNodes(value);
+                    }}
+                    // Lines is a free display control: it reslices already-cached
+                    // lines and never re-searches, and the review kept enough of
+                    // them to honour it, so it stays on the finding rather than
+                    // dropping to a live search like the controls above.
                     onMultipvChange={setEngineMultipv}
-                    onRefresh={refreshEngineAnalysis}
-                    onPlayMove={handlePlayEngineMove}
+                    onRefresh={() => {
+                      goLiveHere();
+                      refreshEngineAnalysis();
+                    }}
+                    // Available on a review finding too: the candidates belong to
+                    // the position before the flagged move, and that is exactly
+                    // where `engineLineAnchor` grafts them.
+                    onPlayLine={handlePlayEngineLine}
+                    collapsed={engineCollapsed}
+                    onToggleCollapsed={() =>
+                      setEngineCollapsedOverride(!engineCollapsed)
+                    }
+                    reviewed={showingReviewAnalysis}
                   />
                 </div>
               ) : null}

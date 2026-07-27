@@ -93,6 +93,21 @@ export interface BughouseHalfMove {
   };
 }
 
+/**
+ * One validated link of a move sequence: the edge and the position it leads to.
+ *
+ * A sequence is built and validated in one pass *before* it reaches the store,
+ * because each move has to be applied to the position the one before it
+ * produced. The store cannot do that itself -- it holds no validator -- and a
+ * caller cannot do it by calling the single-move entry point repeatedly, since
+ * that always applies to the position at the cursor. So the walk happens once,
+ * outside, and arrives here as a finished chain.
+ */
+export interface MovePathStep {
+  move: BughouseHalfMove;
+  next: BughousePositionSnapshot;
+}
+
 export interface AnalysisNode {
   id: string;
   parentId: string | null;
