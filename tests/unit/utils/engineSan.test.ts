@@ -59,6 +59,43 @@ describe("uciToSan", () => {
     expect(uciToSan("n@f7", START)).toBe("N@f7");
   });
 
+  describe("check and mate suffixes", () => {
+    // Smothered mate by drop: the knight's own check cannot be blocked, g8 and
+    // h7 are the king's own men, and nothing can take on f7.
+    const SMOTHERED = "6rk/6pp/8/8/8/8/8/K7 w - - 0 1";
+
+    it("marks a mating drop", () => {
+      // chess.js has no drop move, so nothing writes this suffix for us. Without
+      // it a mate reads as a quiet developing move.
+      expect(uciToSan("N@f7", SMOTHERED)).toBe("N@f7#");
+    });
+
+    it("marks a checking drop", () => {
+      // Same board, one square over: h7 can capture the knight, so it is only a
+      // check.
+      expect(uciToSan("N@g6", SMOTHERED)).toBe("N@g6+");
+    });
+
+    it("leaves a quiet drop unmarked", () => {
+      expect(uciToSan("N@e4", SMOTHERED)).toBe("N@e4");
+    });
+
+    it("writes a back-rank mate as a check when a drop could block it", () => {
+      // Standard chess calls this mate. Bughouse does not: e8, f8, and g8 are
+      // empty, so a dropped piece interposes. The move list already applies this
+      // rule, and the two must not disagree about the same move.
+      const BACK_RANK = "7k/5ppp/8/8/8/8/8/K2R4 w - - 0 1";
+      expect(uciToSan("d1d8", BACK_RANK)).toBe("Rd8+");
+    });
+
+    it("keeps the mate mark when nothing can be interposed", () => {
+      // The queen lands next to the king, guarded by its own king, so there is
+      // no square between checker and king for a drop to occupy.
+      const ADJACENT = "7k/3Q4/6K1/8/8/8/8/8 w - - 0 1";
+      expect(uciToSan("d7g7", ADJACENT)).toBe("Qg7#");
+    });
+  });
+
   describe("falls back to raw UCI rather than guessing", () => {
     // A wrong move name actively misleads; an ugly one only inconveniences.
     it.each([
@@ -156,6 +193,15 @@ describe("pvToSan", () => {
       position(),
     );
     expect(got[2].a).toBe("Ngf3");
+  });
+
+  it("marks a drop that ends the line", () => {
+    // The reason this matters in a PV: the last ply of a mating line is exactly
+    // the one a reader needs to see is a mate.
+    const SMOTHERED = "6rk/6pp/8/8/8/8/8/K7 w - - 0 1";
+    expect(pvToSan([{ a: "N@f7", b: null }], position(SMOTHERED))).toEqual([
+      { a: "N@f7#", b: "sit" },
+    ]);
   });
 
   it("gives up on a drop it cannot trust", () => {

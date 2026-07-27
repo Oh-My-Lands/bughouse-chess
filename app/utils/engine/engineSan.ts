@@ -1,6 +1,10 @@
 import { Chess, type PieceSymbol, type Square } from "chess.js";
 
 import { forceToggleTurnAndClearEnPassant } from "@/app/utils/analysis/applyMove";
+import {
+  getBughouseCheckSuffix,
+  normalizeSanSuffixForBughouse,
+} from "@/app/utils/board/bughouseCheckmate";
 import { teamFor } from "@/app/utils/engine/engineMode";
 import type {
   BughouseBoardId,
@@ -108,23 +112,38 @@ function applyDropToReplay(chess: Chess, uci: string): boolean {
  */
 export function uciToSan(uci: string, fen: string): string {
   const drop = formatDrop(uci);
-  if (drop) return drop;
 
   const from = uci.slice(0, 2);
   const to = uci.slice(2, 4);
   const promotion = uci.slice(4, 5).toLowerCase();
-  if (!/^[a-h][1-8]$/.test(from) || !/^[a-h][1-8]$/.test(to)) return uci;
+  if (!drop && (!/^[a-h][1-8]$/.test(from) || !/^[a-h][1-8]$/.test(to))) {
+    return uci;
+  }
 
   try {
     const chess = new Chess(fen);
+    if (drop) {
+      // chess.js has no drop move, so nothing appends the check or mate suffix
+      // for one -- it has to be read off the position the drop produces. Left
+      // out, a mating drop reads as a quiet move.
+      return applyDropToReplay(chess, uci)
+        ? `${drop}${getBughouseCheckSuffix(chess)}`
+        : drop;
+    }
     const move = chess.move(
       promotion ? { from, to, promotion } : { from, to },
     );
-    return move?.san ?? uci;
+    // chess.js writes `#` by standard rules, where bughouse often disagrees: a
+    // check with a square between the checker and the king can be answered by
+    // dropping a piece there, so it is only a check. Same normalisation the
+    // move list applies, so the two cannot disagree about the same move.
+    return move
+      ? normalizeSanSuffixForBughouse({ san: move.san, board: chess })
+      : uci;
   } catch {
     // Bughouse positions can be illegal for standard chess (drops produce
     // material standard rules cannot), so this is an expected path, not a bug.
-    return uci;
+    return drop ?? uci;
   }
 }
 
@@ -228,21 +247,31 @@ export function pvToSan(
           return acc;
         }
 
+        const board = state.chess;
         const drop = formatDrop(uci);
         if (drop) {
           // A drop that will not apply leaves the position unknown from here on.
-          if (!applyDropToReplay(state.chess, uci)) state.chess = null;
-          acc[key] = drop;
+          // One that does applies its own suffix: chess.js writes none for a
+          // drop, so a mating one would otherwise read as a quiet move.
+          if (!applyDropToReplay(board, uci)) {
+            state.chess = null;
+            acc[key] = drop;
+          } else {
+            acc[key] = `${drop}${getBughouseCheckSuffix(board)}`;
+          }
           return acc;
         }
 
         try {
-          const move = state.chess.move({
+          const move = board.move({
             from: uci.slice(0, 2),
             to: uci.slice(2, 4),
             ...(uci.slice(4, 5) ? { promotion: uci.slice(4, 5).toLowerCase() } : {}),
           });
-          acc[key] = move?.san ?? uci;
+          // See uciToSan: `#` by standard rules is often only `+` in bughouse.
+          acc[key] = move
+            ? normalizeSanSuffixForBughouse({ san: move.san, board })
+            : uci;
           if (!move) state.chess = null;
         } catch {
           state.chess = null;
